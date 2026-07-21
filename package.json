@@ -1,0 +1,19 @@
+{
+  "name": "topic-expansion-public-runner",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Sanitized public GitHub Actions runner for sharded topic expansion.",
+  "scripts": {
+    "start": "node scripts/run-topic-expansion.js"
+  },
+  "dependencies": {
+    "@google/genai": "^2.12.0",
+    "bullmq": "^5.34.2",
+    "dotenv": "^16.4.7",
+    "ioredis": "^5.4.2",
+    "playwright": "^1.61.1",
+    "undici": "^8.4.1",
+    "yaml": "^2.9.0"
+  }
+}

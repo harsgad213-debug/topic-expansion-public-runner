@@ -1,0 +1,227 @@
+name: Topic Expansion Public Matrix
+
+on:
+  workflow_dispatch:
+    inputs:
+      shard_count:
+        description: "Number of shard jobs"
+        required: true
+        default: "4"
+      max_parallel:
+        description: "Maximum shard jobs to run at once"
+        required: true
+        default: "4"
+      topic_limit:
+        description: "Topic limit after stage filtering"
+        required: true
+        default: "100"
+      topic_offset:
+        description: "Topic offset after stage filtering"
+        required: true
+        default: "0"
+      test_stage:
+        description: "Runner TEST_STAGE value"
+        required: true
+        default: "stress"
+      summary_concurrency:
+        description: "GITHUB_PHASE1_SUMMARY_CONCURRENCY per shard"
+        required: true
+        default: "2"
+      stage_a_topic_concurrency:
+        description: "Topic folders to process concurrently inside each shard"
+        required: true
+        default: "1"
+      force_regen:
+        description: "Force regeneration of existing response_parts"
+        required: true
+        default: "false"
+      output_release_tag:
+        description: "Private output repo release tag for result assets"
+        required: true
+        default: "topic-expansion-results"
+      github_phase1_models:
+        description: "Comma-separated GitHub Models list for Phase 1 synthesis"
+        required: true
+        default: "openai/gpt-4o,deepseek/deepseek-v3-0324,openai/gpt-4.1,deepseek/deepseek-r1-0528,deepseek/deepseek-r1,mistral-ai/mistral-medium-2505,meta/llama-4-maverick-17b-128e-instruct-fp8,meta/llama-3.3-70b-instruct,openai/gpt-4o-mini,openai/gpt-4.1-mini,microsoft/phi-4,mistral-ai/codestral-2501"
+
+permissions:
+  contents: read
+
+jobs:
+  matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.build.outputs.matrix }}
+    steps:
+      - id: build
+        env:
+          SHARD_COUNT: ${{ inputs.shard_count }}
+        run: |
+          node -e "
+            const count = Number.parseInt(process.env.SHARD_COUNT, 10);
+            if (!Number.isInteger(count) || count < 1 || count > 64) {
+              throw new Error('shard_count must be between 1 and 64');
+            }
+            const shard_index = Array.from({ length: count }, (_, i) => i);
+            console.log('matrix=' + JSON.stringify({ shard_index }));
+          " >> "$GITHUB_OUTPUT"
+
+  topic-expansion-shard:
+    needs: matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ fromJSON(inputs.max_parallel) }}
+      matrix: ${{ fromJSON(needs.matrix.outputs.matrix) }}
+
+    env:
+      USE_GITHUB_PHASE1: "true"
+      PIPELINE_STAGE: "a"
+      TEST_STAGE: ${{ inputs.test_stage }}
+      TOPIC_LIMIT: ${{ inputs.topic_limit }}
+      TOPIC_OFFSET: ${{ inputs.topic_offset }}
+      TOPIC_SHARD_COUNT: ${{ inputs.shard_count }}
+      TOPIC_SHARD_INDEX: ${{ matrix.shard_index }}
+      GITHUB_PHASE1_SUMMARY_CONCURRENCY: ${{ inputs.summary_concurrency }}
+      GITHUB_PHASE1_MODELS: ${{ inputs.github_phase1_models }}
+      STAGE_A_TOPIC_CONCURRENCY: ${{ inputs.stage_a_topic_concurrency }}
+      FORCE_GITHUB_PHASE1_REGEN: ${{ inputs.force_regen }}
+      DISABLE_GROQ: "true"
+      DISABLE_GEMINI: "true"
+      DISABLE_CEREBRAS: "true"
+      DISABLE_MISTRAL: "true"
+      DISABLE_CLOUDFLARE: "true"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Select key shard
+        shell: bash
+        env:
+          GH_MODELS_KEYS: ${{ secrets.GH_MODELS_KEYS }}
+          GH_MODELS_KEYS_00: ${{ secrets.GH_MODELS_KEYS_00 }}
+          GH_MODELS_KEYS_01: ${{ secrets.GH_MODELS_KEYS_01 }}
+          GH_MODELS_KEYS_02: ${{ secrets.GH_MODELS_KEYS_02 }}
+          GH_MODELS_KEYS_03: ${{ secrets.GH_MODELS_KEYS_03 }}
+          GH_MODELS_KEYS_04: ${{ secrets.GH_MODELS_KEYS_04 }}
+          GH_MODELS_KEYS_05: ${{ secrets.GH_MODELS_KEYS_05 }}
+          GH_MODELS_KEYS_06: ${{ secrets.GH_MODELS_KEYS_06 }}
+          GH_MODELS_KEYS_07: ${{ secrets.GH_MODELS_KEYS_07 }}
+          GH_MODELS_KEYS_08: ${{ secrets.GH_MODELS_KEYS_08 }}
+          GH_MODELS_KEYS_09: ${{ secrets.GH_MODELS_KEYS_09 }}
+          GH_MODELS_KEYS_10: ${{ secrets.GH_MODELS_KEYS_10 }}
+          GH_MODELS_KEYS_11: ${{ secrets.GH_MODELS_KEYS_11 }}
+          GH_MODELS_KEYS_12: ${{ secrets.GH_MODELS_KEYS_12 }}
+          GH_MODELS_KEYS_13: ${{ secrets.GH_MODELS_KEYS_13 }}
+          GH_MODELS_KEYS_14: ${{ secrets.GH_MODELS_KEYS_14 }}
+          GH_MODELS_KEYS_15: ${{ secrets.GH_MODELS_KEYS_15 }}
+        run: |
+          index=$(( TOPIC_SHARD_INDEX % 16 ))
+          selected=""
+          case "$index" in
+            0) selected="$GH_MODELS_KEYS_00" ;;
+            1) selected="$GH_MODELS_KEYS_01" ;;
+            2) selected="$GH_MODELS_KEYS_02" ;;
+            3) selected="$GH_MODELS_KEYS_03" ;;
+            4) selected="$GH_MODELS_KEYS_04" ;;
+            5) selected="$GH_MODELS_KEYS_05" ;;
+            6) selected="$GH_MODELS_KEYS_06" ;;
+            7) selected="$GH_MODELS_KEYS_07" ;;
+            8) selected="$GH_MODELS_KEYS_08" ;;
+            9) selected="$GH_MODELS_KEYS_09" ;;
+            10) selected="$GH_MODELS_KEYS_10" ;;
+            11) selected="$GH_MODELS_KEYS_11" ;;
+            12) selected="$GH_MODELS_KEYS_12" ;;
+            13) selected="$GH_MODELS_KEYS_13" ;;
+            14) selected="$GH_MODELS_KEYS_14" ;;
+            15) selected="$GH_MODELS_KEYS_15" ;;
+          esac
+          if [ -z "$selected" ]; then
+            selected="$GH_MODELS_KEYS"
+          fi
+          if [ -z "$selected" ]; then
+            echo "No GitHub Models key secret configured for this shard."
+            exit 2
+          fi
+          key_count="$(SELECTED_KEYS="$selected" node -e 'const raw=process.env.SELECTED_KEYS||""; console.log(raw.split(/[\n,;]+/).map(s=>s.trim()).filter(Boolean).length)')"
+          echo "Selected key shard slot: $index"
+          echo "Selected key count: $key_count"
+          {
+            echo "GITHUB_KEYS<<__GITHUB_KEYS__"
+            echo "$selected"
+            echo "__GITHUB_KEYS__"
+          } >> "$GITHUB_ENV"
+
+      - name: Download topic archive
+        shell: bash
+        env:
+          TOPIC_DATA_ZIP_URL: ${{ secrets.TOPIC_DATA_ZIP_URL }}
+          TOPIC_DATA_AUTH_HEADER: ${{ secrets.TOPIC_DATA_AUTH_HEADER }}
+        run: |
+          mkdir -p _run_data
+          if [ -z "$TOPIC_DATA_ZIP_URL" ]; then
+            echo "Missing TOPIC_DATA_ZIP_URL secret."
+            exit 3
+          fi
+          if [ -n "$TOPIC_DATA_AUTH_HEADER" ]; then
+            curl -fsSL --retry 5 --retry-delay 5 -H "$TOPIC_DATA_AUTH_HEADER" "$TOPIC_DATA_ZIP_URL" -o _topic_data.zip
+          else
+            curl -fsSL --retry 5 --retry-delay 5 "$TOPIC_DATA_ZIP_URL" -o _topic_data.zip
+          fi
+          unzip -q _topic_data.zip -d _run_data
+
+      - name: Run topic expansion shard
+        env:
+          ORGANIZED_DIR: ${{ github.workspace }}/_run_data/FreshArchive/organized
+          OUT_DIR: ${{ github.workspace }}/_run_output/knowledge_output
+        run: node scripts/run-topic-expansion.js
+
+      - name: Package private result asset
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p _result/response_parts _result/run_output
+          if [ -d "_run_data/FreshArchive/organized" ]; then
+            while IFS= read -r -d '' dir; do
+              rel="${dir#_run_data/FreshArchive/organized/}"
+              mkdir -p "_result/response_parts/$rel"
+              cp -R "$dir/." "_result/response_parts/$rel/"
+            done < <(find _run_data/FreshArchive/organized -path "*/response_parts" -type d -print0)
+          fi
+          if [ -d "_run_output" ]; then
+            cp -R _run_output/. _result/run_output/
+          fi
+          tar -czf "topic-expansion-shard-${TOPIC_SHARD_INDEX}.tgz" -C _result .
+          full_count="$(find _result/response_parts -name '*_FULL.txt' -type f 2>/dev/null | wc -l | tr -d ' ')"
+          dlq_count="$(find _result/response_parts -name 'stage-a-dlq.json' -type f 2>/dev/null | wc -l | tr -d ' ')"
+          echo "Packaged FULL outputs: $full_count"
+          echo "Packaged DLQ files: $dlq_count"
+
+      - name: Upload result to private output repo
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.OUTPUT_REPO_TOKEN }}
+          OUTPUT_REPO: ${{ secrets.OUTPUT_REPO }}
+          OUTPUT_RELEASE_TAG: ${{ inputs.output_release_tag }}
+        run: |
+          if [ -z "$GH_TOKEN" ] || [ -z "$OUTPUT_REPO" ]; then
+            echo "Missing OUTPUT_REPO_TOKEN or OUTPUT_REPO secret. Refusing to upload results publicly."
+            exit 4
+          fi
+          if ! gh release view "$OUTPUT_RELEASE_TAG" --repo "$OUTPUT_REPO" >/dev/null 2>&1; then
+            gh release create "$OUTPUT_RELEASE_TAG" --repo "$OUTPUT_REPO" --title "$OUTPUT_RELEASE_TAG" --notes "Private topic expansion shard outputs."
+          fi
+          gh release upload "$OUTPUT_RELEASE_TAG" "topic-expansion-shard-${TOPIC_SHARD_INDEX}.tgz" --repo "$OUTPUT_REPO" --clobber

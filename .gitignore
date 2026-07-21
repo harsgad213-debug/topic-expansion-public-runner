@@ -1,0 +1,15 @@
+node_modules/
+_run_data/
+_run_output/
+_result/
+*.zip
+*.tgz
+*.log
+*.jsonl
+.env
+.env.*
+*keys*
+*_keys*
+*_KEYS*
+hf_key_shards/
+hf_outputs/
