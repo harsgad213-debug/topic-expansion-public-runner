@@ -1,6 +1,6 @@
 const fs = require("fs");
 const path = require("path");
-const { fetch } = require("undici");
+const { fetch, ProxyAgent } = require("undici");
 
 const GITHUB_ENDPOINT = "https://models.github.ai/inference/chat/completions";
 const PROMPT_TYPES = new Set(["full_book", "unit_overview", "knowledge_map"]);
@@ -23,61 +23,84 @@ function nonNegativeEnvInt(name) {
   return Number.isFinite(value) && value > 0 ? value : 0;
 }
 
-let keyCursor = nonNegativeEnvInt("GITHUB_PHASE1_KEY_OFFSET");
-let modelCursor = nonNegativeEnvInt("GITHUB_PHASE1_MODEL_OFFSET");
-const REQUEST_ATTEMPTS = nonNegativeEnvInt("GITHUB_PHASE1_ATTEMPTS") || 40;
-const REQUEST_TIMEOUT_MS = nonNegativeEnvInt("GITHUB_PHASE1_TIMEOUT_MS") || 180000;
 let totalRequests = 0;
 let totalFailures = 0;
 const metadataFileCache = new Map();
-const accessBlockedBuckets = new Set();
-const dailyExhaustedBuckets = new Set();
-const coolingBuckets = new Map();
 
-function githubBucketId(key, model) {
-  return `${key}:${model}`;
-}
+// --- RESILIENCY STATES ---
+const keyProxyMap = new Map();
+const proxyHealth = new Map();
+const deadProxies = new Set();
+const keyUaMap = new Map();
+const inFlightBucket = new Map();
+const coolingBucket = new Map();
+const tpdExhausted = new Map();
+const keyDailyUsage = new Map();
+const rateLimiters = new Map();
+const proxyAgents = new Map();
+let ALL_BUCKETS = [];
+let bucketsInitialized = false;
 
-function isAccessBlockedResponse(status, data) {
-  const code = data?.error?.code || "";
-  const message = String(data?.error?.message || data?.raw || "").toLowerCase();
-  return (
-    status === 401 ||
-    status === 404 ||
-    code === "no_access" ||
-    message.includes("no access to model")
-  );
-}
+const UAs = [
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15',
+  'python-requests/2.31.0',
+  'PostmanRuntime/7.36.0',
+  'curl/8.4.0',
+  'groq-python/0.4.2'
+];
 
-function isDailyExhaustionResponse(res, data) {
-  const rateLimitType = String(res.headers?.get?.("x-ratelimit-type") || "").toLowerCase();
-  const message = String(data?.error?.message || data?.raw || "").toLowerCase();
-  return (
-    rateLimitType === "userbymodelbyday" ||
-    message.includes("tokens per day") ||
-    message.includes("per day") ||
-    message.includes("daily")
-  );
-}
-
-function getRetryAfterMs(res, fallbackMs = 60000) {
-  const raw = res.headers?.get?.("retry-after");
-  if (!raw) return fallbackMs;
-  const seconds = Number.parseFloat(raw);
-  if (Number.isFinite(seconds) && seconds > 0) return seconds * 1000;
-  const dateMs = Date.parse(raw);
-  if (Number.isFinite(dateMs)) return Math.max(1000, dateMs - Date.now());
-  return fallbackMs;
-}
-
-function isCooling(bucket, now = Date.now()) {
-  const until = coolingBuckets.get(bucket) || 0;
-  if (until <= now) {
-    coolingBuckets.delete(bucket);
+class RateLimiter {
+  constructor(max, refillPerSec) {
+    this.max = max; this.tokens = max; this.refill = refillPerSec;
+    this.last = Date.now();
+  }
+  canConsume() {
+    const now = Date.now();
+    const elapsed = (now - this.last) / 1000;
+    this.tokens = Math.min(this.max, this.tokens + elapsed * this.refill);
+    this.last = now;
+    if (this.tokens >= 1) { this.tokens -= 1; return true; }
     return false;
   }
-  return true;
 }
+
+function initBuckets(keys, models) {
+  if (bucketsInitialized) return;
+  
+  // Try load proxies
+  let proxyList = [];
+  try {
+    const pPath = path.join(process.cwd(), 'proxies.txt');
+    if (fs.existsSync(pPath)) {
+      proxyList = fs.readFileSync(pPath, 'utf8').split('\n').map(l => l.trim()).filter(l => l.length > 0);
+      console.log(`[Init] Loaded ${proxyList.length} proxies from proxies.txt`);
+    }
+  } catch(e) {}
+
+  for (const k of keys) {
+    if (proxyList.length > 0) {
+      // Assign sticky proxy deterministically
+      const pIdx = Math.abs(k.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0)) % proxyList.length;
+      keyProxyMap.set(k, proxyList[pIdx]);
+    }
+    // Assign sticky UA randomly
+    keyUaMap.set(k, UAs[Math.floor(Math.random() * UAs.length)]);
+    
+    for (const m of models) {
+      ALL_BUCKETS.push({ key: k, model: m, id: `${k}:${m}` });
+    }
+  }
+
+  // Fisher-Yates shuffle ALL_BUCKETS
+  for (let i = ALL_BUCKETS.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [ALL_BUCKETS[i], ALL_BUCKETS[j]] = [ALL_BUCKETS[j], ALL_BUCKETS[i]];
+  }
+  bucketsInitialized = true;
+  console.log(`[Init] Initialized and shuffled ${ALL_BUCKETS.length} buckets.`);
+}
+
 
 function safeSegment(value) {
   return String(value || "untitled")
@@ -107,6 +130,7 @@ function stripMarkdownFence(text) {
 
 function normalizeGeneratedOutput(text) {
   let cleaned = stripMarkdownFence(text);
+  cleaned = cleaned.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
   cleaned = cleaned
     .split("\n")
     .filter((line) => !line.trim().startsWith("```"))
@@ -713,113 +737,156 @@ async function callGitHub(keys, models, messages, options = {}) {
   if (!Array.isArray(keys) || !keys.length) {
     throw new Error("No GitHub keys available for GitHub Phase 1 synthesis.");
   }
+  
+  initBuckets(keys, models);
+  
   const maxTokens = options.maxTokens || 1600;
   const temperature = options.temperature ?? 0.2;
   const inputChars = messages.reduce((sum, message) => sum + String(message.content || "").length, 0);
   const estimatedTokens = Math.ceil(inputChars / 4) + maxTokens;
-  const candidateModels = models.filter(
-    (model) => estimatedTokens < (MODEL_LIMITS.get(model) || 8000),
-  );
-  const usableModels = candidateModels.length ? candidateModels : models;
-  const attempts = Math.min(keys.length * usableModels.length, options.attempts || REQUEST_ATTEMPTS);
+  
+  const usableBuckets = ALL_BUCKETS.filter(b => estimatedTokens < (MODEL_LIMITS.get(b.model) || 8000));
+  // Fallback: if token-limit filtering removed all buckets, use all (let the model reject if needed)
+  const bucketsToUse = usableBuckets.length > 0 ? usableBuckets : ALL_BUCKETS;
+
+  const attempts = Math.min(bucketsToUse.length, options.attempts || 40);
   let lastError = null;
+  let waitLoops = 0;
 
   for (let attempt = 0; attempt < attempts; attempt++) {
-    let key = null;
-    let model = null;
-    let bucket = null;
-    const maxScans = keys.length * usableModels.length;
-    const now = Date.now();
-    let foundNonBlockedBucket = false;
-    let earliestCooldown = Infinity;
-    for (let scan = 0; scan < maxScans; scan++) {
-      const candidateKey = keys[keyCursor++ % keys.length];
-      const candidateModel = usableModels[modelCursor++ % usableModels.length];
-      const candidateBucket = githubBucketId(candidateKey, candidateModel);
-      if (accessBlockedBuckets.has(candidateBucket) || dailyExhaustedBuckets.has(candidateBucket)) continue;
-      foundNonBlockedBucket = true;
-      if (isCooling(candidateBucket, now)) {
-        earliestCooldown = Math.min(earliestCooldown, coolingBuckets.get(candidateBucket));
-        continue;
-      }
-      key = candidateKey;
-      model = candidateModel;
-      bucket = candidateBucket;
+    let selectedBucket = null;
+    let selectedKey = null;
+    let selectedModel = null;
+    
+    // Smart Bucket Selector
+    for (let tryCount = 0; tryCount < bucketsToUse.length * 2; tryCount++) {
+      const now = Date.now();
+      const idx = (Math.floor(Math.random() * bucketsToUse.length) + tryCount) % bucketsToUse.length;
+      const b = bucketsToUse[idx];
+      const bId = b.id;
+      
+      if ((keyDailyUsage.get(bId) || 0) >= 180) continue; // Soft daily cap
+      if (tpdExhausted.get(bId)) continue; // Exhausted
+      if ((inFlightBucket.get(bId) || 0) > 0) continue; // In-flight concurrency
+      if ((coolingBucket.get(bId) || 0) > now) continue; // Cooling down
+      // Skip buckets whose proxy is dead
+      const pStr = keyProxyMap.get(b.key);
+      if (pStr && deadProxies.has(pStr)) continue;
+      
+      if (!rateLimiters.has(bId)) rateLimiters.set(bId, new RateLimiter(2, 0.5));
+      if (!rateLimiters.get(bId).canConsume()) continue;
+      
+      selectedBucket = bId;
+      selectedKey = b.key;
+      selectedModel = b.model;
       break;
     }
-    if (!key || !model) {
-      if (!foundNonBlockedBucket) {
-        throw lastError || new Error("All GitHub key/model buckets are access-blocked or daily-exhausted for this request.");
+
+    if (!selectedBucket) {
+      waitLoops++;
+      if (waitLoops > 120) {
+        throw lastError || new Error("All buckets permanently exhausted or cooling — giving up.");
       }
-      if (Number.isFinite(earliestCooldown)) {
-        await sleep(Math.min(5000, Math.max(500, earliestCooldown - Date.now())));
-        attempt--;
-        continue;
-      }
-      throw lastError || new Error("No GitHub key/model bucket is currently available.");
+      // Wait for buckets to cool down or rate limits to refill
+      await new Promise(r => setTimeout(r, 500));
+      attempt--; // don't count wait loop against retry attempts
+      continue;
     }
+    waitLoops = 0; // reset on successful selection
+    
     totalRequests++;
+    inFlightBucket.set(selectedBucket, (inFlightBucket.get(selectedBucket) || 0) + 1);
+    
+    let dispatcher = undefined;
+    const proxyStr = keyProxyMap.get(selectedKey);
+    if (proxyStr && !deadProxies.has(proxyStr)) {
+      if (!proxyAgents.has(proxyStr)) {
+        proxyAgents.set(proxyStr, new ProxyAgent({
+          uri: `http://${proxyStr}`,
+          connections: 10,
+          requestTls: { rejectUnauthorized: false },
+          connect: { timeout: 10000 }
+        }));
+      }
+      dispatcher = proxyAgents.get(proxyStr);
+    }
+    
+    const userAgent = keyUaMap.get(selectedKey) || "Mozilla/5.0";
+
     try {
+      // Jitter to prevent synchronized bursts
+      await new Promise(r => setTimeout(r, Math.random() * 250));
+
       const res = await fetch(GITHUB_ENDPOINT, {
         method: "POST",
+        dispatcher,
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${key}`,
+          "Authorization": `Bearer ${selectedKey}`,
+          "User-Agent": userAgent
         },
         body: JSON.stringify({
-          model,
+          model: selectedModel,
           messages,
           max_tokens: maxTokens,
           temperature,
         }),
-        signal: AbortSignal.timeout(options.timeoutMs || REQUEST_TIMEOUT_MS),
+        signal: AbortSignal.timeout(options.timeoutMs || 180000),
       });
 
       const text = await res.text();
       let data = null;
-      try {
-        data = JSON.parse(text);
-      } catch {
-        data = { raw: text };
-      }
+      try { data = JSON.parse(text); } catch { data = { raw: text }; }
 
       if (!res.ok) {
-        lastError = new Error(
-          `GitHub Models HTTP ${res.status}: ${JSON.stringify(data).slice(0, 400)}`,
-        );
+        lastError = new Error(`GitHub Models HTTP ${res.status}: ${JSON.stringify(data).slice(0, 400)}`);
         totalFailures++;
-        if (isAccessBlockedResponse(res.status, data)) {
-          accessBlockedBuckets.add(bucket);
-          continue;
-        }
+        
         if (res.status === 429) {
-          if (isDailyExhaustionResponse(res, data)) {
-            dailyExhaustedBuckets.add(bucket);
-            continue;
+          const bodyText = (text || "").toLowerCase();
+          if (bodyText.includes("tokens per day") || res.headers.get("x-ratelimit-type") === "UserByModelByDay") {
+            tpdExhausted.set(selectedBucket, true);
+          } else {
+            const retryAfter = res.headers.get("retry-after");
+            const cooldownMs = retryAfter ? parseFloat(retryAfter) * 1000 : 60000;
+            coolingBucket.set(selectedBucket, Date.now() + cooldownMs);
           }
-          coolingBuckets.set(bucket, Date.now() + getRetryAfterMs(res));
-          continue;
+        } else if (res.status >= 500) {
+           if (proxyStr) {
+             const ph = proxyHealth.get(proxyStr) || { failures: 0 };
+             ph.failures++;
+             proxyHealth.set(proxyStr, ph);
+             if (ph.failures > 50) deadProxies.add(proxyStr);
+           }
         }
-        if ([400, 401, 403, 404, 413].includes(res.status)) continue;
-        await sleep(800 + attempt * 250);
+        
         continue;
       }
 
+      keyDailyUsage.set(selectedBucket, (keyDailyUsage.get(selectedBucket) || 0) + 1);
+      
       const content = data?.choices?.[0]?.message?.content || data?.choices?.[0]?.text || "";
       if (!content.trim()) {
         lastError = new Error("GitHub Models returned empty content.");
         totalFailures++;
         continue;
       }
-      return { content: content.trim(), model, usage: data.usage || {} };
+      return { content: content.trim(), model: selectedModel, usage: data.usage || {} };
     } catch (err) {
       lastError = err;
       totalFailures++;
-      await sleep(1000 + attempt * 250);
+      if (proxyStr && (err.code === 'ECONNRESET' || err.code === 'ETIMEDOUT' || err.name === 'TimeoutError')) {
+        const ph = proxyHealth.get(proxyStr) || { failures: 0 };
+        ph.failures++;
+        proxyHealth.set(proxyStr, ph);
+        if (ph.failures > 50) deadProxies.add(proxyStr);
+      }
+    } finally {
+      inFlightBucket.set(selectedBucket, Math.max(0, inFlightBucket.get(selectedBucket) - 1));
     }
   }
 
-  throw lastError || new Error("GitHub Models call failed.");
+  throw lastError || new Error("GitHub Models call failed after " + attempts + " attempts.");
 }
 
 async function summarizeChunk(keys, models, cacheDir, topicName, chunk, source, sourceIndex, sourceCount) {
