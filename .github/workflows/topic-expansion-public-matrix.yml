@@ -59,6 +59,10 @@ on:
         description: "Comma-separated GitHub Models list for Phase 1 synthesis"
         required: true
         default: "openai/gpt-4o-mini,openai/gpt-4.1-mini,mistral-ai/codestral-2501,meta/llama-3.3-70b-instruct,mistral-ai/mistral-medium-2505,openai/gpt-4o,openai/gpt-4.1,deepseek/deepseek-v3-0324,deepseek/deepseek-r1-0528,deepseek/deepseek-r1,meta/llama-4-maverick-17b-128e-instruct-fp8,microsoft/phi-4"
+      use_all_keys:
+        description: "Use the combined GH_MODELS_KEYS secret (all keys) instead of per-shard slices. Set true for qualification/test runs."
+        required: false
+        default: "false"
 
 permissions:
   contents: read
@@ -130,6 +134,7 @@ jobs:
       - name: Select key shard
         shell: bash
         env:
+          USE_ALL_KEYS: ${{ inputs.use_all_keys }}
           GH_MODELS_KEYS: ${{ secrets.GH_MODELS_KEYS }}
           GH_MODELS_KEYS_00: ${{ secrets.GH_MODELS_KEYS_00 }}
           GH_MODELS_KEYS_01: ${{ secrets.GH_MODELS_KEYS_01 }}
@@ -168,6 +173,9 @@ jobs:
             14) selected="$GH_MODELS_KEYS_14" ;;
             15) selected="$GH_MODELS_KEYS_15" ;;
           esac
+          if [ "$USE_ALL_KEYS" = "true" ]; then
+            selected="$GH_MODELS_KEYS"
+          fi
           if [ -z "$selected" ]; then
             selected="$GH_MODELS_KEYS"
           fi
@@ -253,3 +261,4 @@ jobs:
             gh release create "$OUTPUT_RELEASE_TAG" --repo "$OUTPUT_REPO" --title "$OUTPUT_RELEASE_TAG" --notes "Private topic expansion shard outputs."
           fi
           gh release upload "$OUTPUT_RELEASE_TAG" "topic-expansion-shard-${TOPIC_SHARD_INDEX}.tgz" --repo "$OUTPUT_REPO" --clobber
+
