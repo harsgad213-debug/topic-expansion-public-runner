@@ -207,6 +207,17 @@ jobs:
             echo "__GITHUB_KEYS__"
           } >> "$GITHUB_ENV"
 
+      - name: Download proxies
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.OUTPUT_REPO_TOKEN }}
+          OUTPUT_REPO: ${{ secrets.OUTPUT_REPO }}
+        run: |
+          GH_TOKEN="$GH_TOKEN" gh release download proxy-data \
+            --repo "$OUTPUT_REPO" \
+            --pattern "proxies.txt" \
+            --output proxies.txt 2>/dev/null || echo "Proxy list unavailable, continuing without proxies."
+
       - name: Download topic archive
         shell: bash
         env:
