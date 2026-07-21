@@ -39,6 +39,14 @@ on:
         description: "Private output repo release tag for result assets"
         required: true
         default: "topic-expansion-results"
+      data_release_tag:
+        description: "Private data repo release tag"
+        required: true
+        default: "topic-data-pilot"
+      data_asset_name:
+        description: "Private data repo release asset ZIP name"
+        required: true
+        default: "topic_data_balanced_100.zip"
       github_phase1_models:
         description: "Comma-separated GitHub Models list for Phase 1 synthesis"
         required: true
@@ -169,16 +177,24 @@ jobs:
         env:
           TOPIC_DATA_ZIP_URL: ${{ secrets.TOPIC_DATA_ZIP_URL }}
           TOPIC_DATA_AUTH_HEADER: ${{ secrets.TOPIC_DATA_AUTH_HEADER }}
+          DATA_REPO: ${{ secrets.DATA_REPO }}
+          DATA_REPO_TOKEN: ${{ secrets.DATA_REPO_TOKEN }}
+          DATA_RELEASE_TAG: ${{ inputs.data_release_tag }}
+          DATA_ASSET_NAME: ${{ inputs.data_asset_name }}
         run: |
           mkdir -p _run_data
-          if [ -z "$TOPIC_DATA_ZIP_URL" ]; then
-            echo "Missing TOPIC_DATA_ZIP_URL secret."
-            exit 3
-          fi
-          if [ -n "$TOPIC_DATA_AUTH_HEADER" ]; then
+          if [ -n "$DATA_REPO" ] && [ -n "$DATA_REPO_TOKEN" ]; then
+            GH_TOKEN="$DATA_REPO_TOKEN" gh release download "$DATA_RELEASE_TAG" \
+              --repo "$DATA_REPO" \
+              --pattern "$DATA_ASSET_NAME" \
+              --output _topic_data.zip
+          elif [ -n "$TOPIC_DATA_ZIP_URL" ] && [ -n "$TOPIC_DATA_AUTH_HEADER" ]; then
             curl -fsSL --retry 5 --retry-delay 5 -H "$TOPIC_DATA_AUTH_HEADER" "$TOPIC_DATA_ZIP_URL" -o _topic_data.zip
-          else
+          elif [ -n "$TOPIC_DATA_ZIP_URL" ]; then
             curl -fsSL --retry 5 --retry-delay 5 "$TOPIC_DATA_ZIP_URL" -o _topic_data.zip
+          else
+            echo "Missing data source. Set DATA_REPO + DATA_REPO_TOKEN or TOPIC_DATA_ZIP_URL."
+            exit 3
           fi
           unzip -q _topic_data.zip -d _run_data
 

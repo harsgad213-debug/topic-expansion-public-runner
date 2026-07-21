@@ -17,7 +17,8 @@ Add these in GitHub:
 
 ```text
 GH_MODELS_KEYS
-TOPIC_DATA_ZIP_URL
+DATA_REPO
+DATA_REPO_TOKEN
 OUTPUT_REPO
 OUTPUT_REPO_TOKEN
 ```
@@ -33,12 +34,27 @@ GH_MODELS_KEYS_15
 
 The workflow chooses a key shard by `TOPIC_SHARD_INDEX % 16`, falling back to `GH_MODELS_KEYS` if a shard secret is missing.
 
-`TOPIC_DATA_ZIP_URL` must point to a ZIP with:
+`DATA_REPO` should point to a private repository containing the topic data release:
+
+```text
+owner/private-data-repo
+```
+
+`DATA_REPO_TOKEN` needs read access to that private repository's releases.
+
+The release asset must be a ZIP with:
 
 ```text
 FreshArchive/
   organized/
     ...
+```
+
+As a fallback, the workflow also supports:
+
+```text
+TOPIC_DATA_ZIP_URL
+TOPIC_DATA_AUTH_HEADER
 ```
 
 `OUTPUT_REPO` should be a private repository such as:
