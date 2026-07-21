@@ -749,7 +749,8 @@ async function callGitHub(keys, models, messages, options = {}) {
   // Fallback: if token-limit filtering removed all buckets, use all (let the model reject if needed)
   const bucketsToUse = usableBuckets.length > 0 ? usableBuckets : ALL_BUCKETS;
 
-  const attempts = Math.min(bucketsToUse.length, options.attempts || 40);
+  // Attempt as many times as there are buckets — cycle through all of them
+  const attempts = bucketsToUse.length;
   let lastError = null;
   let waitLoops = 0;
 
@@ -769,9 +770,6 @@ async function callGitHub(keys, models, messages, options = {}) {
       if (tpdExhausted.get(bId)) continue; // Exhausted
       if ((inFlightBucket.get(bId) || 0) > 0) continue; // In-flight concurrency
       if ((coolingBucket.get(bId) || 0) > now) continue; // Cooling down
-      // Skip buckets whose proxy is dead
-      const pStr = keyProxyMap.get(b.key);
-      if (pStr && deadProxies.has(pStr)) continue;
       
       if (!rateLimiters.has(bId)) rateLimiters.set(bId, new RateLimiter(2, 0.5));
       if (!rateLimiters.get(bId).canConsume()) continue;
