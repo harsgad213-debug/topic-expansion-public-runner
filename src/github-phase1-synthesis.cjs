@@ -25,6 +25,8 @@ function nonNegativeEnvInt(name) {
 
 let keyCursor = nonNegativeEnvInt("GITHUB_PHASE1_KEY_OFFSET");
 let modelCursor = nonNegativeEnvInt("GITHUB_PHASE1_MODEL_OFFSET");
+const REQUEST_ATTEMPTS = nonNegativeEnvInt("GITHUB_PHASE1_ATTEMPTS") || 40;
+const REQUEST_TIMEOUT_MS = nonNegativeEnvInt("GITHUB_PHASE1_TIMEOUT_MS") || 180000;
 let totalRequests = 0;
 let totalFailures = 0;
 const metadataFileCache = new Map();
@@ -719,7 +721,7 @@ async function callGitHub(keys, models, messages, options = {}) {
     (model) => estimatedTokens < (MODEL_LIMITS.get(model) || 8000),
   );
   const usableModels = candidateModels.length ? candidateModels : models;
-  const attempts = Math.min(keys.length * usableModels.length, options.attempts || 40);
+  const attempts = Math.min(keys.length * usableModels.length, options.attempts || REQUEST_ATTEMPTS);
   let lastError = null;
 
   for (let attempt = 0; attempt < attempts; attempt++) {
@@ -770,7 +772,7 @@ async function callGitHub(keys, models, messages, options = {}) {
           max_tokens: maxTokens,
           temperature,
         }),
-        signal: AbortSignal.timeout(options.timeoutMs || 180000),
+        signal: AbortSignal.timeout(options.timeoutMs || REQUEST_TIMEOUT_MS),
       });
 
       const text = await res.text();

@@ -27,6 +27,14 @@ on:
         description: "GITHUB_PHASE1_SUMMARY_CONCURRENCY per shard"
         required: true
         default: "2"
+      github_phase1_attempts:
+        description: "Maximum GitHub model bucket attempts per request"
+        required: true
+        default: "24"
+      github_phase1_timeout_ms:
+        description: "Per GitHub Models request timeout in milliseconds"
+        required: true
+        default: "90000"
       stage_a_topic_concurrency:
         description: "Topic folders to process concurrently inside each shard"
         required: true
@@ -50,7 +58,7 @@ on:
       github_phase1_models:
         description: "Comma-separated GitHub Models list for Phase 1 synthesis"
         required: true
-        default: "openai/gpt-4o,deepseek/deepseek-v3-0324,openai/gpt-4.1,deepseek/deepseek-r1-0528,deepseek/deepseek-r1,mistral-ai/mistral-medium-2505,meta/llama-4-maverick-17b-128e-instruct-fp8,meta/llama-3.3-70b-instruct,openai/gpt-4o-mini,openai/gpt-4.1-mini,microsoft/phi-4,mistral-ai/codestral-2501"
+        default: "openai/gpt-4o-mini,openai/gpt-4.1-mini,mistral-ai/codestral-2501,meta/llama-3.3-70b-instruct,mistral-ai/mistral-medium-2505,openai/gpt-4o,openai/gpt-4.1,deepseek/deepseek-v3-0324,deepseek/deepseek-r1-0528,deepseek/deepseek-r1,meta/llama-4-maverick-17b-128e-instruct-fp8,microsoft/phi-4"
 
 permissions:
   contents: read
@@ -93,6 +101,10 @@ jobs:
       TOPIC_SHARD_INDEX: ${{ matrix.shard_index }}
       GITHUB_PHASE1_SUMMARY_CONCURRENCY: ${{ inputs.summary_concurrency }}
       GITHUB_PHASE1_MODELS: ${{ inputs.github_phase1_models }}
+      GITHUB_PHASE1_ATTEMPTS: ${{ inputs.github_phase1_attempts }}
+      GITHUB_PHASE1_TIMEOUT_MS: ${{ inputs.github_phase1_timeout_ms }}
+      GITHUB_PHASE1_KEY_OFFSET: ${{ matrix.shard_index }}
+      GITHUB_PHASE1_MODEL_OFFSET: ${{ matrix.shard_index }}
       STAGE_A_TOPIC_CONCURRENCY: ${{ inputs.stage_a_topic_concurrency }}
       FORCE_GITHUB_PHASE1_REGEN: ${{ inputs.force_regen }}
       DISABLE_GROQ: "true"
