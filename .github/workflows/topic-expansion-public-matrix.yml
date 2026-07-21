@@ -174,7 +174,22 @@ jobs:
             15) selected="$GH_MODELS_KEYS_15" ;;
           esac
           if [ "$USE_ALL_KEYS" = "true" ]; then
-            selected="$GH_MODELS_KEYS"
+            selected=""
+            for shard_keys in \
+              "$GH_MODELS_KEYS" "$GH_MODELS_KEYS_00" "$GH_MODELS_KEYS_01" \
+              "$GH_MODELS_KEYS_02" "$GH_MODELS_KEYS_03" "$GH_MODELS_KEYS_04" \
+              "$GH_MODELS_KEYS_05" "$GH_MODELS_KEYS_06" "$GH_MODELS_KEYS_07" \
+              "$GH_MODELS_KEYS_08" "$GH_MODELS_KEYS_09" "$GH_MODELS_KEYS_10" \
+              "$GH_MODELS_KEYS_11" "$GH_MODELS_KEYS_12" "$GH_MODELS_KEYS_13" \
+              "$GH_MODELS_KEYS_14" "$GH_MODELS_KEYS_15"; do
+              if [ -n "$shard_keys" ]; then
+                if [ -n "$selected" ]; then
+                  selected="${selected}"$'\n'"${shard_keys}"
+                else
+                  selected="$shard_keys"
+                fi
+              fi
+            done
           fi
           if [ -z "$selected" ]; then
             selected="$GH_MODELS_KEYS"
@@ -261,4 +276,5 @@ jobs:
             gh release create "$OUTPUT_RELEASE_TAG" --repo "$OUTPUT_REPO" --title "$OUTPUT_RELEASE_TAG" --notes "Private topic expansion shard outputs."
           fi
           gh release upload "$OUTPUT_RELEASE_TAG" "topic-expansion-shard-${TOPIC_SHARD_INDEX}.tgz" --repo "$OUTPUT_REPO" --clobber
+
 
