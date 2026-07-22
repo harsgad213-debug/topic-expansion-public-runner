@@ -1794,6 +1794,7 @@ async function generateGithubPhase1Synthesis(options) {
     log(
       `Expanding/alignment pass for ${promptType}; current chars=${finalText.length}, target=${targetLength}, deterministic_issues=${finalLocalIssues.length}`,
     );
+    const preExpandText = finalText;
     finalText = await expandShortOutput(
       githubKeys,
       models,
@@ -1814,6 +1815,13 @@ async function generateGithubPhase1Synthesis(options) {
       baseline,
       targetLength,
     );
+    // Regression guard: never accept an expand result that is shorter than what we had.
+    // Models like Llama sometimes rewrite and condense instead of expanding.
+    if (finalText.length < preExpandText.length * 0.9) {
+      log(`Expand produced regression (${finalText.length} < ${preExpandText.length} * 0.9) — reverting to pre-expand text`);
+      finalText = preExpandText;
+    }
+
     finalAudit = await auditOutput(
       githubKeys,
       models,
