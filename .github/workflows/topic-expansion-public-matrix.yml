@@ -67,6 +67,14 @@ on:
         description: "Skip GitHub buckets entirely — run Groq models only (for qualification)"
         required: false
         default: "false"
+      mistral_phase1_models:
+        description: "Comma-separated Mistral models list for Phase 1 synthesis"
+        required: false
+        default: ""
+      mistral_only:
+        description: "Skip GitHub buckets entirely — run Mistral models only (for qualification)"
+        required: false
+        default: "false"
       use_all_keys:
         description: "Use the combined GH_MODELS_KEYS secret (all keys) instead of per-shard slices. Set true for qualification/test runs."
         required: false
@@ -122,10 +130,12 @@ jobs:
       GROQ_KEYS: ${{ secrets.GROQ_KEYS }}
       GROQ_PHASE1_MODELS: ${{ inputs.groq_phase1_models }}
       GROQ_ONLY: ${{ inputs.groq_only }}
+      MISTRAL_KEYS: ${{ secrets.MISTRAL_KEYS }}
+      MISTRAL_PHASE1_MODELS: ${{ inputs.mistral_phase1_models }}
+      MISTRAL_ONLY: ${{ inputs.mistral_only }}
       DISABLE_GROQ: "true"
       DISABLE_GEMINI: "true"
       DISABLE_CEREBRAS: "true"
-      DISABLE_MISTRAL: "true"
       DISABLE_CLOUDFLARE: "true"
 
     steps:
@@ -298,5 +308,6 @@ jobs:
             gh release create "$OUTPUT_RELEASE_TAG" --repo "$OUTPUT_REPO" --title "$OUTPUT_RELEASE_TAG" --notes "Private topic expansion shard outputs."
           fi
           gh release upload "$OUTPUT_RELEASE_TAG" "topic-expansion-shard-${TOPIC_SHARD_INDEX}.tgz" --repo "$OUTPUT_REPO" --clobber
+
 
 
