@@ -106,6 +106,11 @@ function initBuckets(keys, models) {
   const groqModels = groqModelsRaw.split(',').map(m => m.trim()).filter(Boolean);
   if (groqKeys.length > 0) {
     for (const k of groqKeys) {
+      // Assign sticky proxy (same deterministic logic as GitHub keys)
+      if (proxyList.length > 0) {
+        const pIdx = Math.abs(k.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0)) % proxyList.length;
+        keyProxyMap.set(k, proxyList[pIdx]);
+      }
       keyUaMap.set(k, UAs[Math.floor(Math.random() * UAs.length)]);
       for (const m of groqModels) {
         ALL_BUCKETS.push({ provider: 'groq', key: k, model: m, id: `groq:${k}:${m}` });
