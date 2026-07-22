@@ -3,6 +3,15 @@ const path = require("path");
 const { fetch, ProxyAgent } = require("undici");
 
 const GITHUB_ENDPOINT = "https://models.github.ai/inference/chat/completions";
+const GROQ_ENDPOINT   = "https://api.groq.com/openai/v1/chat/completions";
+
+const GROQ_MODELS_DEFAULT = [
+  'openai/gpt-oss-120b',
+  'openai/gpt-oss-20b',
+  'llama-3.3-70b-versatile',
+  'qwen/qwen3.6-27b',
+  'groq/compound',
+];
 const PROMPT_TYPES = new Set(["full_book", "unit_overview", "knowledge_map"]);
 const CHUNK_CHARS = Number(process.env.GITHUB_PHASE1_CHUNK_CHARS || 12000);
 const CHUNK_OVERLAP = Number(process.env.GITHUB_PHASE1_CHUNK_OVERLAP || 800);
@@ -78,18 +87,31 @@ function initBuckets(keys, models) {
     }
   } catch(e) {}
 
+  // --- GitHub buckets (use proxies) ---
   for (const k of keys) {
     if (proxyList.length > 0) {
-      // Assign sticky proxy deterministically
       const pIdx = Math.abs(k.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0)) % proxyList.length;
       keyProxyMap.set(k, proxyList[pIdx]);
     }
-    // Assign sticky UA randomly
     keyUaMap.set(k, UAs[Math.floor(Math.random() * UAs.length)]);
-    
     for (const m of models) {
-      ALL_BUCKETS.push({ key: k, model: m, id: `${k}:${m}` });
+      ALL_BUCKETS.push({ provider: 'github', key: k, model: m, id: `github:${k}:${m}` });
     }
+  }
+
+  // --- Groq buckets (direct, no proxy) ---
+  const groqKeysRaw = process.env.GROQ_KEYS || '';
+  const groqKeys = groqKeysRaw.split(/[\n,;]+/).map(k => k.trim()).filter(k => k.startsWith('gsk_'));
+  const groqModelsRaw = process.env.GROQ_PHASE1_MODELS || GROQ_MODELS_DEFAULT.join(',');
+  const groqModels = groqModelsRaw.split(',').map(m => m.trim()).filter(Boolean);
+  if (groqKeys.length > 0) {
+    for (const k of groqKeys) {
+      keyUaMap.set(k, UAs[Math.floor(Math.random() * UAs.length)]);
+      for (const m of groqModels) {
+        ALL_BUCKETS.push({ provider: 'groq', key: k, model: m, id: `groq:${k}:${m}` });
+      }
+    }
+    console.log(`[Init] Loaded ${groqKeys.length} Groq keys × ${groqModels.length} models = ${groqKeys.length * groqModels.length} Groq buckets.`);
   }
 
   // Fisher-Yates shuffle ALL_BUCKETS
@@ -98,7 +120,7 @@ function initBuckets(keys, models) {
     [ALL_BUCKETS[i], ALL_BUCKETS[j]] = [ALL_BUCKETS[j], ALL_BUCKETS[i]];
   }
   bucketsInitialized = true;
-  console.log(`[Init] Initialized and shuffled ${ALL_BUCKETS.length} buckets.`);
+  console.log(`[Init] Initialized and shuffled ${ALL_BUCKETS.length} total buckets.`);
 }
 
 
@@ -758,6 +780,7 @@ async function callGitHub(keys, models, messages, options = {}) {
     let selectedBucket = null;
     let selectedKey = null;
     let selectedModel = null;
+    let selectedProvider = 'github';
     
     // Smart Bucket Selector
     for (let tryCount = 0; tryCount < bucketsToUse.length * 2; tryCount++) {
@@ -777,6 +800,7 @@ async function callGitHub(keys, models, messages, options = {}) {
       selectedBucket = bId;
       selectedKey = b.key;
       selectedModel = b.model;
+      selectedProvider = b.provider || 'github';
       break;
     }
 
@@ -796,6 +820,7 @@ async function callGitHub(keys, models, messages, options = {}) {
     inFlightBucket.set(selectedBucket, (inFlightBucket.get(selectedBucket) || 0) + 1);
     
     let dispatcher = undefined;
+    // All providers use proxy + UA rotation for key safety
     const proxyStr = keyProxyMap.get(selectedKey);
     if (proxyStr && !deadProxies.has(proxyStr)) {
       if (!proxyAgents.has(proxyStr)) {
@@ -807,12 +832,12 @@ async function callGitHub(keys, models, messages, options = {}) {
         }));
       }
       dispatcher = proxyAgents.get(proxyStr);
-      // Log proxy usage: show host:port only (strip credentials)
       const proxyHost = proxyStr.includes('@') ? proxyStr.split('@')[1] : proxyStr;
-      console.log(`[REQ #${totalRequests}] via proxy ${proxyHost} | key=...${selectedKey.slice(-4)} | model=${selectedModel}`);
+      console.log(`[REQ #${totalRequests}][${selectedProvider}] via proxy ${proxyHost} | key=...${selectedKey.slice(-4)} | model=${selectedModel}`);
     } else {
-      console.log(`[REQ #${totalRequests}] DIRECT (no proxy) | key=...${selectedKey.slice(-4)} | model=${selectedModel}`);
+      console.log(`[REQ #${totalRequests}][${selectedProvider}] DIRECT | key=...${selectedKey.slice(-4)} | model=${selectedModel}`);
     }
+    const endpoint = selectedProvider === 'groq' ? GROQ_ENDPOINT : GITHUB_ENDPOINT;
     
     const userAgent = keyUaMap.get(selectedKey) || "Mozilla/5.0";
 
@@ -820,7 +845,7 @@ async function callGitHub(keys, models, messages, options = {}) {
       // Jitter to prevent synchronized bursts
       await new Promise(r => setTimeout(r, Math.random() * 250));
 
-      const res = await fetch(GITHUB_ENDPOINT, {
+      const res = await fetch(endpoint, {
         method: "POST",
         dispatcher,
         headers: {
@@ -842,27 +867,31 @@ async function callGitHub(keys, models, messages, options = {}) {
       try { data = JSON.parse(text); } catch { data = { raw: text }; }
 
       if (!res.ok) {
-        lastError = new Error(`GitHub Models HTTP ${res.status}: ${JSON.stringify(data).slice(0, 400)}`);
+        lastError = new Error(`[${selectedProvider}] HTTP ${res.status}: ${JSON.stringify(data).slice(0, 400)}`);
         totalFailures++;
-        
+
         if (res.status === 429) {
           const bodyText = (text || "").toLowerCase();
-          if (bodyText.includes("tokens per day") || res.headers.get("x-ratelimit-type") === "UserByModelByDay") {
+          // GitHub TPD exhaustion
+          if (selectedProvider === 'github' && (bodyText.includes("tokens per day") || res.headers.get("x-ratelimit-type") === "UserByModelByDay")) {
             tpdExhausted.set(selectedBucket, true);
           } else {
+            // Use retry-after if provided, else 60s for GitHub, 30s for Groq
             const retryAfter = res.headers.get("retry-after");
-            const cooldownMs = retryAfter ? parseFloat(retryAfter) * 1000 : 60000;
+            const defaultCool = selectedProvider === 'groq' ? 30000 : 60000;
+            const cooldownMs = retryAfter ? parseFloat(retryAfter) * 1000 : defaultCool;
             coolingBucket.set(selectedBucket, Date.now() + cooldownMs);
           }
-        } else if (res.status >= 500) {
-           if (proxyStr) {
-             const ph = proxyHealth.get(proxyStr) || { failures: 0 };
-             ph.failures++;
-             proxyHealth.set(proxyStr, ph);
-             if (ph.failures > 50) deadProxies.add(proxyStr);
-           }
+        } else if (res.status >= 500 && selectedProvider === 'github') {
+          const proxyStr2 = keyProxyMap.get(selectedKey);
+          if (proxyStr2) {
+            const ph = proxyHealth.get(proxyStr2) || { failures: 0 };
+            ph.failures++;
+            proxyHealth.set(proxyStr2, ph);
+            if (ph.failures > 50) deadProxies.add(proxyStr2);
+          }
         }
-        
+
         continue;
       }
 
