@@ -99,7 +99,7 @@ function initBuckets(keys, models) {
     }
   }
 
-  // --- Groq buckets (direct, no proxy) ---
+  // --- Groq buckets (same proxy + resiliency stack as GitHub) ---
   const groqKeysRaw = process.env.GROQ_KEYS || '';
   const groqKeys = groqKeysRaw.split(/[\n,;]+/).map(k => k.trim()).filter(k => k.startsWith('gsk_'));
   const groqModelsRaw = process.env.GROQ_PHASE1_MODELS || GROQ_MODELS_DEFAULT.join(',');
@@ -898,12 +898,15 @@ async function callGitHub(keys, models, messages, options = {}) {
       keyDailyUsage.set(selectedBucket, (keyDailyUsage.get(selectedBucket) || 0) + 1);
       
       const content = data?.choices?.[0]?.message?.content || data?.choices?.[0]?.text || "";
+      const finishReason = data?.choices?.[0]?.finish_reason || 'unknown';
+      const usage = data.usage || {};
+      console.log(`[REQ #${totalRequests}][${selectedProvider}] ✅ model=${selectedModel} | finish=${finishReason} | in=${usage.prompt_tokens || '?'} out=${usage.completion_tokens || '?'} | chars=${content.length}`);
       if (!content.trim()) {
-        lastError = new Error("GitHub Models returned empty content.");
+        lastError = new Error("Models returned empty content.");
         totalFailures++;
         continue;
       }
-      return { content: content.trim(), model: selectedModel, usage: data.usage || {} };
+      return { content: content.trim(), model: selectedModel, usage, finishReason };
     } catch (err) {
       lastError = err;
       totalFailures++;
