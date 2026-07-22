@@ -863,16 +863,17 @@ async function callGitHub(keys, models, messages, options = {}) {
           "Authorization": `Bearer ${selectedKey}`,
           "User-Agent": userAgent
         },
-         body: JSON.stringify({
+        body: JSON.stringify({
           model: selectedModel,
           messages,
-          // Qwen3 on-demand tier: hard 8000 total token limit (input + output).
-          // With reasoning_effort=none, thinking is disabled — all tokens go to content.
-          max_tokens: selectedModel.includes('qwen')
+          // All Groq on-demand models share a hard 8000 total token limit (input + output).
+          // Dynamically compute max output = 8000 - estimated_input_tokens - 100 buffer.
+          // For qwen, reasoning_effort=none means all tokens go to content (no thinking overhead).
+          max_tokens: selectedProvider === 'groq'
             ? Math.max(500, Math.min(8000 - Math.ceil(inputChars / 4) - 100, maxTokens * 2))
             : maxTokens,
           temperature,
-          // Disable thinking for qwen models: saves all token budget for actual output
+          // Disable thinking for qwen models on Groq: saves all token budget for actual output
           ...(selectedModel.includes('qwen') ? { reasoning_effort: 'none' } : {}),
         }),
         signal: AbortSignal.timeout(options.timeoutMs || 180000),
