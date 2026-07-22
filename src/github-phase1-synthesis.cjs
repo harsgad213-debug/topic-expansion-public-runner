@@ -880,7 +880,9 @@ async function callGitHub(keys, models, messages, options = {}) {
       try { data = JSON.parse(text); } catch { data = { raw: text }; }
 
       if (!res.ok) {
-        lastError = new Error(`[${selectedProvider}] HTTP ${res.status}: ${JSON.stringify(data).slice(0, 400)}`);
+        const errMsg = `[${selectedProvider}] HTTP ${res.status}: ${JSON.stringify(data).slice(0, 400)}`;
+        lastError = new Error(errMsg);
+        console.log(`[REQ #${totalRequests}][${selectedProvider}] ❌ key=...${selectedKey.slice(-4)} | ${errMsg}`);
         totalFailures++;
 
         if (res.status === 429) {
