@@ -88,15 +88,20 @@ function initBuckets(keys, models) {
   } catch(e) {}
 
   // --- GitHub buckets (use proxies) ---
-  for (const k of keys) {
-    if (proxyList.length > 0) {
-      const pIdx = Math.abs(k.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0)) % proxyList.length;
-      keyProxyMap.set(k, proxyList[pIdx]);
+  const groqOnly = process.env.GROQ_ONLY === 'true';
+  if (!groqOnly) {
+    for (const k of keys) {
+      if (proxyList.length > 0) {
+        const pIdx = Math.abs(k.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0)) % proxyList.length;
+        keyProxyMap.set(k, proxyList[pIdx]);
+      }
+      keyUaMap.set(k, UAs[Math.floor(Math.random() * UAs.length)]);
+      for (const m of models) {
+        ALL_BUCKETS.push({ provider: 'github', key: k, model: m, id: `github:${k}:${m}` });
+      }
     }
-    keyUaMap.set(k, UAs[Math.floor(Math.random() * UAs.length)]);
-    for (const m of models) {
-      ALL_BUCKETS.push({ provider: 'github', key: k, model: m, id: `github:${k}:${m}` });
-    }
+  } else {
+    console.log('[Init] GROQ_ONLY=true — skipping GitHub buckets.');
   }
 
   // --- Groq buckets (same proxy + resiliency stack as GitHub) ---
