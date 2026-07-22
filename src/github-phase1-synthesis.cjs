@@ -866,11 +866,10 @@ async function callGitHub(keys, models, messages, options = {}) {
         body: JSON.stringify({
           model: selectedModel,
           messages,
-          // Groq on-demand models: 8000 token ceiling per request (input + output).
-          // 12K TPM for llama is a rate limit, not a per-request output cap — keep 8K.
-          // Dynamically compute max output = 8000 - estimated_input_tokens - 100 buffer.
+          // Groq ceiling: 6000 tokens (llama-3.1-8b-instant has 6K TPM, the lowest of our models).
+          // Dynamically compute max output = 6000 - estimated_input_tokens - 100 buffer.
           max_tokens: selectedProvider === 'groq'
-            ? Math.max(500, Math.min(8000 - Math.ceil(inputChars / 4) - 100, maxTokens * 2))
+            ? Math.max(500, Math.min(6000 - Math.ceil(inputChars / 4) - 100, maxTokens * 2))
             : maxTokens,
           temperature,
           // Disable thinking for qwen models on Groq: saves all token budget for actual output
