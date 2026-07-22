@@ -63,6 +63,10 @@ on:
         description: "Comma-separated Groq models list for Phase 1 synthesis (leave empty to use defaults)"
         required: false
         default: ""
+      groq_only:
+        description: "Skip GitHub buckets entirely — run Groq models only (for qualification)"
+        required: false
+        default: "false"
       use_all_keys:
         description: "Use the combined GH_MODELS_KEYS secret (all keys) instead of per-shard slices. Set true for qualification/test runs."
         required: false
@@ -117,6 +121,7 @@ jobs:
       FORCE_GITHUB_PHASE1_REGEN: ${{ inputs.force_regen }}
       GROQ_KEYS: ${{ secrets.GROQ_KEYS }}
       GROQ_PHASE1_MODELS: ${{ inputs.groq_phase1_models }}
+      GROQ_ONLY: ${{ inputs.groq_only }}
       DISABLE_GROQ: "true"
       DISABLE_GEMINI: "true"
       DISABLE_CEREBRAS: "true"
