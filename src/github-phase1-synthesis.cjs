@@ -1788,7 +1788,7 @@ async function generateGithubPhase1Synthesis(options) {
 
   let finalMetrics = deterministicMetrics(finalText, baseline.length);
   let finalLocalIssues = localParityIssues(promptType, finalText, baseline);
-  const tooShort = baseline.length ? finalMetrics.length_ratio < 0.8 : finalText.length < targetLength * 0.82;
+  const tooShort = baseline.length ? finalMetrics.length_ratio < 0.8 : finalText.length < targetLength * 0.75;
   const tooLong = baseline.length ? finalMetrics.length_ratio > 1.35 : false;
   if (tooShort || tooLong || finalLocalIssues.length > 0) {
     log(
