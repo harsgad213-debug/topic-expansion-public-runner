@@ -2,8 +2,9 @@ const fs = require("fs");
 const path = require("path");
 const { fetch, ProxyAgent } = require("undici");
 
-const GITHUB_ENDPOINT = "https://models.github.ai/inference/chat/completions";
+const GITHUB_ENDPOINT = "https://models.inference.ai.azure.com/chat/completions";
 const GROQ_ENDPOINT   = "https://api.groq.com/openai/v1/chat/completions";
+const MISTRAL_ENDPOINT = "https://api.mistral.ai/v1/chat/completions";
 
 const GROQ_MODELS_DEFAULT = [
   'openai/gpt-oss-120b',
@@ -87,9 +88,11 @@ function initBuckets(keys, models) {
     }
   } catch(e) {}
 
-  // --- GitHub buckets (use proxies) ---
   const groqOnly = process.env.GROQ_ONLY === 'true';
-  if (!groqOnly) {
+  const mistralOnly = process.env.MISTRAL_ONLY === 'true';
+
+  // --- GitHub buckets ---
+  if (!groqOnly && !mistralOnly) {
     for (const k of keys) {
       if (proxyList.length > 0) {
         const pIdx = Math.abs(k.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0)) % proxyList.length;
@@ -101,17 +104,16 @@ function initBuckets(keys, models) {
       }
     }
   } else {
-    console.log('[Init] GROQ_ONLY=true — skipping GitHub buckets.');
+    console.log('[Init] Skipping GitHub buckets due to flag.');
   }
 
-  // --- Groq buckets (same proxy + resiliency stack as GitHub) ---
+  // --- Groq buckets ---
   const groqKeysRaw = process.env.GROQ_KEYS || '';
   const groqKeys = groqKeysRaw.split(/[\n,;]+/).map(k => k.trim()).filter(k => k.startsWith('gsk_'));
   const groqModelsRaw = process.env.GROQ_PHASE1_MODELS || GROQ_MODELS_DEFAULT.join(',');
   const groqModels = groqModelsRaw.split(',').map(m => m.trim()).filter(Boolean);
   if (groqKeys.length > 0) {
     for (const k of groqKeys) {
-      // Assign sticky proxy (same deterministic logic as GitHub keys)
       if (proxyList.length > 0) {
         const pIdx = Math.abs(k.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0)) % proxyList.length;
         keyProxyMap.set(k, proxyList[pIdx]);
@@ -122,6 +124,25 @@ function initBuckets(keys, models) {
       }
     }
     console.log(`[Init] Loaded ${groqKeys.length} Groq keys × ${groqModels.length} models = ${groqKeys.length * groqModels.length} Groq buckets.`);
+  }
+
+  // --- Mistral buckets ---
+  const mistralKeysRaw = process.env.MISTRAL_KEYS || '';
+  const mistralKeys = mistralKeysRaw.split(/[\n,;]+/).map(k => k.trim()).filter(Boolean);
+  const mistralModelsRaw = process.env.MISTRAL_PHASE1_MODELS || '';
+  const mistralModels = mistralModelsRaw.split(',').map(m => m.trim()).filter(Boolean);
+  if (mistralKeys.length > 0) {
+    for (const k of mistralKeys) {
+      if (proxyList.length > 0) {
+        const pIdx = Math.abs(k.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0)) % proxyList.length;
+        keyProxyMap.set(k, proxyList[pIdx]);
+      }
+      keyUaMap.set(k, UAs[Math.floor(Math.random() * UAs.length)]);
+      for (const m of mistralModels) {
+        ALL_BUCKETS.push({ provider: 'mistral', key: k, model: m, id: `mistral:${k}:${m}` });
+      }
+    }
+    console.log(`[Init] Loaded ${mistralKeys.length} Mistral keys × ${mistralModels.length} models = ${mistralKeys.length * mistralModels.length} Mistral buckets.`);
   }
 
   // Fisher-Yates shuffle ALL_BUCKETS
@@ -766,11 +787,7 @@ async function mapLimit(items, limit, fn) {
 }
 
 async function callGitHub(keys, models, messages, options = {}) {
-  if (!Array.isArray(keys) || !keys.length) {
-    throw new Error("No GitHub keys available for GitHub Phase 1 synthesis.");
-  }
-  
-  initBuckets(keys, models);
+  if (!bucketsInitialized) initBuckets(keys, models);
   
   const maxTokens = options.maxTokens || 1600;
   const temperature = options.temperature ?? 0.2;
@@ -778,10 +795,8 @@ async function callGitHub(keys, models, messages, options = {}) {
   const estimatedTokens = Math.ceil(inputChars / 4) + maxTokens;
   
   const usableBuckets = ALL_BUCKETS.filter(b => estimatedTokens < (MODEL_LIMITS.get(b.model) || 8000));
-  // Fallback: if token-limit filtering removed all buckets, use all (let the model reject if needed)
   const bucketsToUse = usableBuckets.length > 0 ? usableBuckets : ALL_BUCKETS;
 
-  // Attempt as many times as there are buckets — cycle through all of them
   const attempts = bucketsToUse.length;
   let lastError = null;
   let waitLoops = 0;
@@ -792,17 +807,16 @@ async function callGitHub(keys, models, messages, options = {}) {
     let selectedModel = null;
     let selectedProvider = 'github';
     
-    // Smart Bucket Selector
     for (let tryCount = 0; tryCount < bucketsToUse.length * 2; tryCount++) {
       const now = Date.now();
       const idx = (Math.floor(Math.random() * bucketsToUse.length) + tryCount) % bucketsToUse.length;
       const b = bucketsToUse[idx];
       const bId = b.id;
       
-      if ((keyDailyUsage.get(bId) || 0) >= 180) continue; // Soft daily cap
-      if (tpdExhausted.get(bId)) continue; // Exhausted
-      if ((inFlightBucket.get(bId) || 0) > 0) continue; // In-flight concurrency
-      if ((coolingBucket.get(bId) || 0) > now) continue; // Cooling down
+      if ((keyDailyUsage.get(bId) || 0) >= 180) continue; 
+      if (tpdExhausted.get(bId)) continue; 
+      if ((inFlightBucket.get(bId) || 0) > 0) continue; 
+      if ((coolingBucket.get(bId) || 0) > now) continue; 
       
       if (!rateLimiters.has(bId)) rateLimiters.set(bId, new RateLimiter(2, 0.5));
       if (!rateLimiters.get(bId).canConsume()) continue;
@@ -819,18 +833,16 @@ async function callGitHub(keys, models, messages, options = {}) {
       if (waitLoops > 120) {
         throw lastError || new Error("All buckets permanently exhausted or cooling — giving up.");
       }
-      // Wait for buckets to cool down or rate limits to refill
       await new Promise(r => setTimeout(r, 500));
-      attempt--; // don't count wait loop against retry attempts
+      attempt--; 
       continue;
     }
-    waitLoops = 0; // reset on successful selection
+    waitLoops = 0; 
     
     totalRequests++;
     inFlightBucket.set(selectedBucket, (inFlightBucket.get(selectedBucket) || 0) + 1);
     
     let dispatcher = undefined;
-    // All providers use proxy + UA rotation for key safety
     const proxyStr = keyProxyMap.get(selectedKey);
     if (proxyStr && !deadProxies.has(proxyStr)) {
       if (!proxyAgents.has(proxyStr)) {
@@ -847,15 +859,17 @@ async function callGitHub(keys, models, messages, options = {}) {
     } else {
       console.log(`[REQ #${totalRequests}][${selectedProvider}] DIRECT | key=...${selectedKey.slice(-4)} | model=${selectedModel}`);
     }
-    const endpoint = selectedProvider === 'groq' ? GROQ_ENDPOINT : GITHUB_ENDPOINT;
+    
+    let url = GITHUB_ENDPOINT;
+    if (selectedProvider === 'groq') url = GROQ_ENDPOINT;
+    if (selectedProvider === 'mistral') url = MISTRAL_ENDPOINT;
     
     const userAgent = keyUaMap.get(selectedKey) || "Mozilla/5.0";
 
     try {
-      // Jitter to prevent synchronized bursts
       await new Promise(r => setTimeout(r, Math.random() * 250));
 
-      const res = await fetch(endpoint, {
+      const res = await fetch(url, {
         method: "POST",
         dispatcher,
         headers: {
