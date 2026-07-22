@@ -866,11 +866,15 @@ async function callGitHub(keys, models, messages, options = {}) {
         body: JSON.stringify({
           model: selectedModel,
           messages,
-          // All Groq on-demand models share a hard 8000 total token limit (input + output).
-          // Dynamically compute max output = 8000 - estimated_input_tokens - 100 buffer.
-          // For qwen, reasoning_effort=none means all tokens go to content (no thinking overhead).
+          // Groq per-request token limits vary by model:
+          //   llama models: 12K TPM  → use 12000 as ceiling
+          //   all others (qwen, gpt-oss, compound): 8K TPM → use 8000 as ceiling
+          // Dynamically compute max output = limit - estimated_input_tokens - 100 buffer.
           max_tokens: selectedProvider === 'groq'
-            ? Math.max(500, Math.min(8000 - Math.ceil(inputChars / 4) - 100, maxTokens * 2))
+            ? (() => {
+                const groqLimit = selectedModel.includes('llama') ? 12000 : 8000;
+                return Math.max(500, Math.min(groqLimit - Math.ceil(inputChars / 4) - 100, maxTokens * 2));
+              })()
             : maxTokens,
           temperature,
           // Disable thinking for qwen models on Groq: saves all token budget for actual output
