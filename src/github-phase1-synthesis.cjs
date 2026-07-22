@@ -867,9 +867,9 @@ async function callGitHub(keys, models, messages, options = {}) {
           model: selectedModel,
           messages,
           // Qwen3 reasoning models consume tokens for thinking before responding;
-          // multiply max_tokens by 6 to ensure thinking finishes even on complex synthesis calls
-          // (source synthesis with 1200-base × 3 = 3600 was still hitting the cap)
-          max_tokens: selectedModel.includes('qwen') ? maxTokens * 6 : maxTokens,
+          // multiply max_tokens by 6 to ensure thinking finishes even on complex synthesis calls,
+          // but cap at 8000 to stay within Groq's qwen output limit (~8192)
+          max_tokens: selectedModel.includes('qwen') ? Math.min(maxTokens * 6, 8000) : maxTokens,
           temperature,
         }),
         signal: AbortSignal.timeout(options.timeoutMs || 180000),
