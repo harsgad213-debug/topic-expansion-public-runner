@@ -1820,6 +1820,11 @@ async function generateGithubPhase1Synthesis(options) {
     if (finalText.length < preExpandText.length * 0.9) {
       log(`Expand produced regression (${finalText.length} < ${preExpandText.length} * 0.9) — reverting to pre-expand text`);
       finalText = preExpandText;
+    } else if (finalText.length > targetLength * 2) {
+      // Overflow guard: finish=length can produce enormous content (e.g. 26K for a 10K target).
+      // The result is truncated mid-sentence — revert to the pre-expand version instead.
+      log(`Expand produced overflow (${finalText.length} > ${targetLength} * 2) — reverting to pre-expand text`);
+      finalText = preExpandText;
     }
 
     finalAudit = await auditOutput(
