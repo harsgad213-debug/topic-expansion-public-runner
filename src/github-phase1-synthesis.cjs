@@ -1632,7 +1632,7 @@ Return the full ${tooLong ? "condensed" : "expanded"} output now.`,
     ],
     { maxTokens, temperature: 0.12, timeoutMs: 240000 },
   );
-  return normalizeGeneratedOutput(result.content);
+  return { text: normalizeGeneratedOutput(result.content), finishedNaturally: result.finishReason === 'stop' };
 }
 
 async function generateGithubPhase1Synthesis(options) {
@@ -1788,14 +1788,14 @@ async function generateGithubPhase1Synthesis(options) {
 
   let finalMetrics = deterministicMetrics(finalText, baseline.length);
   let finalLocalIssues = localParityIssues(promptType, finalText, baseline);
-  const tooShort = baseline.length ? finalMetrics.length_ratio < 0.8 : finalText.length < targetLength * 0.75;
-  const tooLong = baseline.length ? finalMetrics.length_ratio > 1.35 : false;
-  if (tooShort || tooLong || finalLocalIssues.length > 0) {
+  const needsExpand = finalLocalIssues.length > 0 ||
+    (baseline.length ? finalMetrics.length_ratio < 0.8 : finalText.length < targetLength);
+  if (needsExpand) {
     log(
       `Expanding/alignment pass for ${promptType}; current chars=${finalText.length}, target=${targetLength}, deterministic_issues=${finalLocalIssues.length}`,
     );
     const preExpandText = finalText;
-    finalText = await expandShortOutput(
+    const expandResult = await expandShortOutput(
       githubKeys,
       models,
       pkg,
@@ -1815,16 +1815,13 @@ async function generateGithubPhase1Synthesis(options) {
       baseline,
       targetLength,
     );
-    // Regression guard: never accept an expand result that is shorter than what we had.
-    // Models like Llama sometimes rewrite and condense instead of expanding.
-    if (finalText.length < preExpandText.length * 0.9) {
-      log(`Expand produced regression (${finalText.length} < ${preExpandText.length} * 0.9) — reverting to pre-expand text`);
+    // One rule: if the model hit its output limit (finish=length), the result is truncated.
+    // Keep the patched version instead. If it finished naturally, accept the expansion.
+    if (!expandResult.finishedNaturally) {
+      log(`Expand hit output limit (finish=length) — keeping pre-expand text (${preExpandText.length} chars)`);
       finalText = preExpandText;
-    } else if (finalText.length > targetLength * 2) {
-      // Overflow guard: finish=length can produce enormous content (e.g. 26K for a 10K target).
-      // The result is truncated mid-sentence — revert to the pre-expand version instead.
-      log(`Expand produced overflow (${finalText.length} > ${targetLength} * 2) — reverting to pre-expand text`);
-      finalText = preExpandText;
+    } else {
+      finalText = expandResult.text;
     }
 
     finalAudit = await auditOutput(
