@@ -867,8 +867,9 @@ async function callGitHub(keys, models, messages, options = {}) {
           model: selectedModel,
           messages,
           // Qwen3 reasoning models consume tokens for thinking before responding;
-          // multiply max_tokens by 3 to ensure thinking finishes and content is produced
-          max_tokens: selectedModel.includes('qwen') ? maxTokens * 3 : maxTokens,
+          // multiply max_tokens by 6 to ensure thinking finishes even on complex synthesis calls
+          // (source synthesis with 1200-base × 3 = 3600 was still hitting the cap)
+          max_tokens: selectedModel.includes('qwen') ? maxTokens * 6 : maxTokens,
           temperature,
         }),
         signal: AbortSignal.timeout(options.timeoutMs || 180000),
