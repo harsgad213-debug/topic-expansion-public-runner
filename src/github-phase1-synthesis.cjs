@@ -868,6 +868,8 @@ async function callGitHub(keys, models, messages, options = {}) {
           messages,
           max_tokens: maxTokens,
           temperature,
+          // Disable thinking output for qwen3 reasoning models
+          ...(selectedModel.includes('qwen') ? { chat_template_kwargs: { enable_thinking: false } } : {}),
         }),
         signal: AbortSignal.timeout(options.timeoutMs || 180000),
       });
@@ -907,7 +909,18 @@ async function callGitHub(keys, models, messages, options = {}) {
 
       keyDailyUsage.set(selectedBucket, (keyDailyUsage.get(selectedBucket) || 0) + 1);
       
-      const content = data?.choices?.[0]?.message?.content || data?.choices?.[0]?.text || "";
+      // Strip <think>...</think> reasoning blocks (reasoning models like qwen3)
+      let content = (data?.choices?.[0]?.message?.content || data?.choices?.[0]?.text || "");
+      if (content.includes('<think>')) {
+        // If properly closed, strip the block
+        content = content.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+        // If still starts with <think> (unclosed — model was cut off mid-reasoning), discard
+        if (content.startsWith('<think>') || content.trim() === '') {
+          lastError = new Error('Model returned unclosed <think> block — output discarded.');
+          totalFailures++;
+          continue;
+        }
+      }
       const finishReason = data?.choices?.[0]?.finish_reason || 'unknown';
       const usage = data.usage || {};
       console.log(`[REQ #${totalRequests}][${selectedProvider}] ✅ model=${selectedModel} | finish=${finishReason} | in=${usage.prompt_tokens || '?'} out=${usage.completion_tokens || '?'} | chars=${content.length}`);
