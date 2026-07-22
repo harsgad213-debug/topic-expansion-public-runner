@@ -807,6 +807,15 @@ async function callGitHub(keys, models, messages, options = {}) {
         }));
       }
       dispatcher = proxyAgents.get(proxyStr);
+      // Log proxy usage: show host:port only (strip credentials)
+      const proxyHost = proxyStr.includes('@') ? proxyStr.split('@')[1] : proxyStr;
+      if (totalRequests <= 5 || totalRequests % 50 === 0) {
+        console.log(`[REQ #${totalRequests}] via proxy ${proxyHost} | key=...${selectedKey.slice(-4)} | model=${selectedModel}`);
+      }
+    } else {
+      if (totalRequests <= 5 || totalRequests % 50 === 0) {
+        console.log(`[REQ #${totalRequests}] DIRECT (no proxy) | key=...${selectedKey.slice(-4)} | model=${selectedModel}`);
+      }
     }
     
     const userAgent = keyUaMap.get(selectedKey) || "Mozilla/5.0";
