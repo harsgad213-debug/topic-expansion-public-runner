@@ -866,10 +866,11 @@ async function callGitHub(keys, models, messages, options = {}) {
         body: JSON.stringify({
           model: selectedModel,
           messages,
-          // Qwen3 reasoning models consume tokens for thinking before responding;
-          // multiply max_tokens by 6 to ensure thinking finishes even on complex synthesis calls,
-          // but cap at 8000 to stay within Groq's qwen output limit (~8192)
-          max_tokens: selectedModel.includes('qwen') ? Math.min(maxTokens * 6, 8000) : maxTokens,
+          // Qwen3 on-demand tier: hard 8000 total token limit (input + output).
+          // Compute available output = 8000 - estimated_input_tokens - 100 buffer.
+          max_tokens: selectedModel.includes('qwen')
+            ? Math.max(500, Math.min(8000 - Math.ceil(inputChars / 4) - 100, maxTokens * 6))
+            : maxTokens,
           temperature,
         }),
         signal: AbortSignal.timeout(options.timeoutMs || 180000),
@@ -897,6 +898,12 @@ async function callGitHub(keys, models, messages, options = {}) {
             const cooldownMs = retryAfter ? parseFloat(retryAfter) * 1000 : defaultCool;
             coolingBucket.set(selectedBucket, Date.now() + cooldownMs);
           }
+        } else if (res.status === 400 && (data?.error?.code === 'organization_restricted' || data?.error?.code === 'invalid_api_key')) {
+          // Permanently dead key — mark as exhausted so we never retry it
+          tpdExhausted.set(selectedBucket, true);
+        } else if (res.status === 401) {
+          // Invalid key — permanently exhaust
+          tpdExhausted.set(selectedBucket, true);
         } else if (res.status >= 500 && selectedProvider === 'github') {
           const proxyStr2 = keyProxyMap.get(selectedKey);
           if (proxyStr2) {
