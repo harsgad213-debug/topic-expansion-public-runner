@@ -111,6 +111,7 @@ jobs:
       GITHUB_PHASE1_MODEL_OFFSET: ${{ matrix.shard_index }}
       STAGE_A_TOPIC_CONCURRENCY: ${{ inputs.stage_a_topic_concurrency }}
       FORCE_GITHUB_PHASE1_REGEN: ${{ inputs.force_regen }}
+      GROQ_KEYS: ${{ secrets.GROQ_KEYS }}
       DISABLE_GROQ: "true"
       DISABLE_GEMINI: "true"
       DISABLE_CEREBRAS: "true"
