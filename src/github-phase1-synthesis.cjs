@@ -866,10 +866,10 @@ async function callGitHub(keys, models, messages, options = {}) {
         body: JSON.stringify({
           model: selectedModel,
           messages,
-          max_tokens: maxTokens,
+          // Qwen3 reasoning models consume tokens for thinking before responding;
+          // multiply max_tokens by 3 to ensure thinking finishes and content is produced
+          max_tokens: selectedModel.includes('qwen') ? maxTokens * 3 : maxTokens,
           temperature,
-          // Disable thinking output for qwen3 reasoning models
-          ...(selectedModel.includes('qwen') ? { chat_template_kwargs: { enable_thinking: false } } : {}),
         }),
         signal: AbortSignal.timeout(options.timeoutMs || 180000),
       });
