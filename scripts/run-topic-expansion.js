@@ -1830,6 +1830,15 @@ async function run() {
     remainingFolders = remainingFolders.slice(0, 3);
 
   const stageSelectedCount = remainingFolders.length;
+  const TOPIC_OFFSET = readNonNegativeIntEnv("TOPIC_OFFSET", 0) || 0;
+  const TOPIC_LIMIT = readNonNegativeIntEnv("TOPIC_LIMIT", null);
+  if (TOPIC_OFFSET || TOPIC_LIMIT != null) {
+    const end =
+      TOPIC_LIMIT == null ? undefined : TOPIC_OFFSET + TOPIC_LIMIT;
+    remainingFolders = remainingFolders.slice(TOPIC_OFFSET, end);
+  }
+  const limitSelectedCount = remainingFolders.length;
+
   const TOPIC_SHARD_COUNT = readNonNegativeIntEnv("TOPIC_SHARD_COUNT", 1) || 1;
   const TOPIC_SHARD_INDEX = readNonNegativeIntEnv("TOPIC_SHARD_INDEX", 0) || 0;
   if (TOPIC_SHARD_COUNT < 1) {
@@ -1844,14 +1853,6 @@ async function run() {
     );
   }
 
-  const TOPIC_OFFSET = readNonNegativeIntEnv("TOPIC_OFFSET", 0) || 0;
-  const TOPIC_LIMIT = readNonNegativeIntEnv("TOPIC_LIMIT", null);
-  if (TOPIC_OFFSET || TOPIC_LIMIT != null) {
-    const end =
-      TOPIC_LIMIT == null ? undefined : TOPIC_OFFSET + TOPIC_LIMIT;
-    remainingFolders = remainingFolders.slice(TOPIC_OFFSET, end);
-  }
-
   console.log(
     "[STAGE: " +
       TEST_STAGE.toUpperCase() +
@@ -1861,6 +1862,7 @@ async function run() {
   );
   console.log("[TOPICS_DISCOVERED: " + allTopicFolders.length + "]");
   console.log("[TOPICS_AFTER_STAGE: " + stageSelectedCount + "]");
+  console.log("[TOPICS_AFTER_OFFSET_LIMIT: " + limitSelectedCount + "]");
   console.log(
     "[TOPIC_SHARD: " +
       TOPIC_SHARD_INDEX +
