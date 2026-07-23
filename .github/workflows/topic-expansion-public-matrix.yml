@@ -62,11 +62,11 @@ on:
       phase1_final_models:
         description: "Optional comma-separated model allowlist for final synthesis, audit, patch, and alignment calls. Leave empty to use all loaded buckets."
         required: false
-        default: ""
+        default: "openai/gpt-4.1,mistral-large-2512,openai/gpt-4.1-mini,openai/gpt-4o"
       groq_phase1_models:
         description: "Comma-separated Groq models list for Phase 1 synthesis (leave empty to use defaults)"
         required: false
-        default: ""
+        default: "qwen/qwen3.6-27b,openai/gpt-oss-120b,openai/gpt-oss-safeguard-20b,openai/gpt-oss-20b,llama-3.3-70b-versatile"
       groq_only:
         description: "Skip GitHub buckets entirely — run Groq models only (for qualification)"
         required: false
@@ -74,7 +74,7 @@ on:
       mistral_phase1_models:
         description: "Comma-separated Mistral models list for Phase 1 synthesis"
         required: false
-        default: ""
+        default: "mistral-large-2512"
       mistral_only:
         description: "Skip GitHub buckets entirely — run Mistral models only (for qualification)"
         required: false
@@ -143,7 +143,7 @@ jobs:
       MISTRAL_PHASE1_MODELS: ${{ inputs.mistral_phase1_models }}
       MISTRAL_ONLY: ${{ inputs.mistral_only }}
       GITHUB_ONLY: ${{ inputs.github_only }}
-      DISABLE_GROQ: "true"
+      DISABLE_GROQ: "false"
       DISABLE_GEMINI: "true"
       DISABLE_CEREBRAS: "true"
       DISABLE_CLOUDFLARE: "true"

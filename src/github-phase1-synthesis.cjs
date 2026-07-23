@@ -6,7 +6,19 @@ const GITHUB_ENDPOINT = "https://models.github.ai/inference/chat/completions";
 const GROQ_ENDPOINT   = "https://api.groq.com/openai/v1/chat/completions";
 const MISTRAL_ENDPOINT = "https://api.mistral.ai/v1/chat/completions";
 
-const GROQ_MODELS_DEFAULT = [];
+const GROQ_MODELS_DEFAULT = [
+  "qwen/qwen3.6-27b",
+  "openai/gpt-oss-120b",
+  "openai/gpt-oss-safeguard-20b",
+  "openai/gpt-oss-20b",
+  "llama-3.3-70b-versatile",
+];
+const DISALLOWED_MODELS = new Set([
+  "groq/compound",
+  "deepseek/deepseek-v3-0324",
+  "deepseek/deepseek-r1-0528",
+  "microsoft/phi-4",
+]);
 const PROMPT_TYPES = new Set(["full_book", "unit_overview", "knowledge_map"]);
 const CHUNK_CHARS = Number(process.env.GITHUB_PHASE1_CHUNK_CHARS || 12000);
 const CHUNK_OVERLAP = Number(process.env.GITHUB_PHASE1_CHUNK_OVERLAP || 800);
@@ -108,7 +120,7 @@ function initBuckets(keys, models) {
   const groqKeysRaw = process.env.GROQ_KEYS || '';
   const groqKeys = groqKeysRaw.split(/[\n,;]+/).map(k => k.trim()).filter(k => k.startsWith('gsk_'));
   const groqModelsRaw = process.env.GROQ_PHASE1_MODELS || GROQ_MODELS_DEFAULT.join(',');
-  const groqModels = groqModelsRaw.split(',').map(m => m.trim()).filter(Boolean);
+  const groqModels = filterAllowedModels(splitModelList(groqModelsRaw), 'GROQ_PHASE1_MODELS');
   if (disableGroq) {
     console.log('[Init] Skipping Groq buckets due to DISABLE_GROQ.');
   } else if (!mistralOnly && !githubOnly && groqKeys.length > 0 && groqModels.length > 0) {
@@ -129,7 +141,7 @@ function initBuckets(keys, models) {
   const mistralKeysRaw = process.env.MISTRAL_KEYS || '';
   const mistralKeys = mistralKeysRaw.split(/[\n,;]+/).map(k => k.trim()).filter(Boolean);
   const mistralModelsRaw = process.env.MISTRAL_PHASE1_MODELS || '';
-  const mistralModels = mistralModelsRaw.split(',').map(m => m.trim()).filter(Boolean);
+  const mistralModels = filterAllowedModels(splitModelList(mistralModelsRaw), 'MISTRAL_PHASE1_MODELS');
   if (disableMistral) {
     console.log('[Init] Skipping Mistral buckets due to DISABLE_MISTRAL.');
   } else if (!groqOnly && !githubOnly && mistralKeys.length > 0 && mistralModels.length > 0) {
@@ -806,13 +818,13 @@ function extractJson(text) {
 }
 
 function normalizeModels(githubModels) {
-  const envModels = (process.env.GITHUB_PHASE1_MODELS || "")
-    .split(",")
-    .map((m) => m.trim())
-    .filter(Boolean);
+  const envModels = filterAllowedModels(
+    splitModelList(process.env.GITHUB_PHASE1_MODELS || ""),
+    "GITHUB_PHASE1_MODELS",
+  );
   if (envModels.length) return envModels;
 
-  const available = Array.isArray(githubModels) ? githubModels : [];
+  const available = filterAllowedModels(Array.isArray(githubModels) ? githubModels : [], "githubModels");
   const preferred = ["openai/gpt-4.1", "openai/gpt-4o"].filter((model) =>
     available.includes(model),
   );
@@ -827,8 +839,23 @@ function splitModelList(value) {
     .filter(Boolean);
 }
 
+function filterAllowedModels(models, label) {
+  const allowed = [];
+  for (const model of models) {
+    if (DISALLOWED_MODELS.has(model)) {
+      console.log(`[Init] Dropping disabled model from ${label}: ${model}`);
+    } else {
+      allowed.push(model);
+    }
+  }
+  return allowed;
+}
+
 function finalModelAllowlist() {
-  return splitModelList(process.env.PHASE1_FINAL_MODELS || process.env.GITHUB_PHASE1_FINAL_MODELS || "");
+  return filterAllowedModels(
+    splitModelList(process.env.PHASE1_FINAL_MODELS || process.env.GITHUB_PHASE1_FINAL_MODELS || ""),
+    "PHASE1_FINAL_MODELS",
+  );
 }
 
 function discoverTranscriptFiles(transcriptsDir, files) {
