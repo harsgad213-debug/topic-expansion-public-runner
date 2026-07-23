@@ -363,6 +363,13 @@ function learnedArchetypeFor(type, topicName, coveragePlan) {
       "why companies need testing",
       "user funnel",
       "database",
+      "email",
+      "password",
+      "email password",
+      "signup fields",
+      "table stores",
+      "registered",
+      "customer",
       "optimization opportunity",
       "designing ab test",
       "statistical thinking",
@@ -400,6 +407,11 @@ function learnedArchetypeFor(type, topicName, coveragePlan) {
       "signup conversion",
       "mobile",
       "name email password",
+      "signup page",
+      "signup form",
+      "signup button",
+      "website",
+      "problem",
       "google",
       "button",
       "control",
@@ -441,6 +453,16 @@ function learnedArchetypeFor(type, topicName, coveragePlan) {
     "key metrics",
     "signup success rate",
     "problem",
+    "part",
+    "map part",
+    "registered",
+    "email password",
+    "name email password",
+    "table stores",
+    "customers",
+    "google",
+    "signup attempts",
+    "dashboard story",
     "actionable insights",
     "why ab testing is needed",
     "ab testing fundamentals",
@@ -2045,13 +2067,16 @@ async function expandShortOutput(keys, models, pkg, type, output, audit, rawSnip
     : Math.round(targetLength * 0.9);
   const targetMaxChars = tooLong
     ? Math.round(targetLength * 1.15)
-    : Math.round(targetLength * 1.25);
+    : Math.round(targetLength * (type === "knowledge_map" && !baseline ? 1.16 : 1.25));
   const shortKnowledgeMap = type === "knowledge_map" && targetLength < 7000;
+  const noBaselineKnowledgeMap = type === "knowledge_map" && !baseline;
   const maxTokens = tooLong
-    ? Math.max(800, Math.min(1250, Math.ceil((targetLength * 0.72) / 4) + 120))
+    ? Math.max(1800, Math.min(5200, Math.ceil((targetMaxChars * 1.08) / 4) + 500))
     : shortKnowledgeMap
       ? Math.max(1100, Math.min(1700, Math.ceil((targetLength * 0.95) / 4) + 260))
-      : Math.max(1800, Math.min(4600, Math.ceil((targetLength * 1.2) / 4) + 550));
+      : noBaselineKnowledgeMap
+        ? Math.max(3600, Math.min(5600, Math.ceil((targetMaxChars * 1.2) / 4) + 650))
+        : Math.max(1800, Math.min(4600, Math.ceil((targetLength * 1.2) / 4) + 550));
   const coveragePlanText = renderCoveragePlan(coveragePlan, {
     sourceLimit: 7,
     phraseLimit: 14,
@@ -2082,6 +2107,7 @@ Hard requirement:
 - Match the ChatGPT UI line density with many short lines and standalone labels. Target at least ${targetMinLines} lines when possible.
 - Use one idea per line. Break dense paragraphs into short standalone teaching lines.
 - For short knowledge-map benchmarks, prefer many short lines over paragraphs; most lines should be under 45 characters.
+- For knowledge_map without a benchmark, make a compact map, not prose: standalone labels, terse branches, arrows, formulas, and example mini-blocks. Keep most lines under 8 words and stay below ${targetMaxChars} characters.
 - If line-density or example-count issues are listed, use sparse outline formatting: short labels, short example blocks, and one fact per line.
 - For knowledge_map, restore PART-style map sections, major benchmark map labels, and relationship arrows where supported. Keep each branch compact.
 - Do not use Markdown # headings, tables, or code fences.
@@ -2289,7 +2315,7 @@ async function generateGithubPhase1Synthesis(options) {
   let finalMetrics = deterministicMetrics(finalText, baseline.length);
   let finalLocalIssues = deterministicQualityIssues(promptType, finalText, baseline, targetLength, coveragePlan);
   let alignmentPasses = 0;
-  while (alignmentPasses < 2) {
+  while (alignmentPasses < 3) {
     const tooShort = baseline.length
       ? finalMetrics.length_ratio < 0.8
       : finalText.length < targetLength * 0.82;
