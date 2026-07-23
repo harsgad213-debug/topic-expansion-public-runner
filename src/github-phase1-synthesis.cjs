@@ -56,19 +56,57 @@ function compactLogValue(value, maxLen = 260) {
     .slice(0, maxLen);
 }
 
-function providerErrorSummary(data) {
+function providerErrorDetails(data) {
   const err = data?.error || {};
-  const type = compactLogValue(err.type || data?.type || "unknown", 80);
-  const code = compactLogValue(err.code || data?.code || "unknown", 80);
-  const message = compactLogValue(err.message || data?.message || data?.raw || "no provider message");
-  return `type=${type} | code=${code} | message=${message}`;
+  return {
+    error_type: compactLogValue(err.type || data?.type || "unknown", 80),
+    error_code: compactLogValue(err.code || data?.code || "unknown", 80),
+    error_message: compactLogValue(err.message || data?.message || data?.raw || "no provider message"),
+  };
+}
+
+function providerErrorSummary(data) {
+  const details = providerErrorDetails(data);
+  return `type=${details.error_type} | code=${details.error_code} | message=${details.error_message}`;
+}
+
+function transportErrorDetails(err) {
+  return {
+    error_type: compactLogValue(err?.name || "Error", 80),
+    error_code: compactLogValue(err?.code || err?.cause?.code || "unknown", 80),
+    error_message: compactLogValue(err?.message || "no error message"),
+  };
 }
 
 function transportErrorSummary(err) {
-  const name = compactLogValue(err?.name || "Error", 80);
-  const code = compactLogValue(err?.code || err?.cause?.code || "unknown", 80);
-  const message = compactLogValue(err?.message || "no error message");
-  return `name=${name} | code=${code} | message=${message}`;
+  const details = transportErrorDetails(err);
+  return `name=${details.error_type} | code=${details.error_code} | message=${details.error_message}`;
+}
+
+function emitPhase1AttemptTelemetry(event) {
+  console.log(JSON.stringify({
+    _type: "github_phase1_attempt",
+    ts: new Date().toISOString(),
+    request_id: event.request_id,
+    provider: event.provider,
+    model: event.model,
+    route: event.route,
+    attempt: event.attempt,
+    attempts: event.attempts,
+    max_tokens: event.max_tokens,
+    timeout_ms: event.timeout_ms,
+    status: event.status,
+    http_status: event.http_status ?? null,
+    finish_reason: event.finish_reason ?? null,
+    prompt_tokens: event.prompt_tokens ?? null,
+    completion_tokens: event.completion_tokens ?? null,
+    total_tokens: event.total_tokens ?? null,
+    chars: event.chars ?? null,
+    latency_ms: event.latency_ms ?? null,
+    error_type: event.error_type ?? null,
+    error_code: event.error_code ?? null,
+    error_message: event.error_message ? compactLogValue(event.error_message) : null,
+  }));
 }
 
 function recordProviderStat(provider, field) {
@@ -163,6 +201,8 @@ function initBuckets(keys, models) {
         ALL_BUCKETS.push({ provider: 'github', key: k, model: m, id: `github:${k}:${m}` });
       }
     }
+    console.log(`[Init] Loaded ${keys.length} GitHub keys x ${models.length} models = ${keys.length * models.length} GitHub buckets.`);
+    console.log(`[Init] GitHub models: ${models.join(", ") || "(none)"}`);
   } else {
     console.log('[Init] Skipping GitHub buckets due to flag.');
   }
@@ -185,7 +225,8 @@ function initBuckets(keys, models) {
         ALL_BUCKETS.push({ provider: 'groq', key: k, model: m, id: `groq:${k}:${m}` });
       }
     }
-    console.log(`[Init] Loaded ${groqKeys.length} Groq keys Ã— ${groqModels.length} models = ${groqKeys.length * groqModels.length} Groq buckets.`);
+    console.log(`[Init] Loaded ${groqKeys.length} Groq keys x ${groqModels.length} models = ${groqKeys.length * groqModels.length} Groq buckets.`);
+    console.log(`[Init] Groq models: ${groqModels.join(", ")}`);
   }
 
   // --- Mistral buckets (skip when groq_only) ---
@@ -206,7 +247,8 @@ function initBuckets(keys, models) {
         ALL_BUCKETS.push({ provider: 'mistral', key: k, model: m, id: `mistral:${k}:${m}` });
       }
     }
-    console.log(`[Init] Loaded ${mistralKeys.length} Mistral keys Ã— ${mistralModels.length} models = ${mistralKeys.length * mistralModels.length} Mistral buckets.`);
+    console.log(`[Init] Loaded ${mistralKeys.length} Mistral keys x ${mistralModels.length} models = ${mistralKeys.length * mistralModels.length} Mistral buckets.`);
+    console.log(`[Init] Mistral models: ${mistralModels.join(", ")}`);
   }
 
   // Fisher-Yates shuffle ALL_BUCKETS
@@ -215,6 +257,13 @@ function initBuckets(keys, models) {
     [ALL_BUCKETS[i], ALL_BUCKETS[j]] = [ALL_BUCKETS[j], ALL_BUCKETS[i]];
   }
   bucketsInitialized = true;
+  const bucketCounts = ALL_BUCKETS.reduce((counts, bucket) => {
+    counts[bucket.provider] = (counts[bucket.provider] || 0) + 1;
+    return counts;
+  }, {});
+  console.log(
+    `[Init] Bucket distribution: github=${bucketCounts.github || 0}, groq=${bucketCounts.groq || 0}, mistral=${bucketCounts.mistral || 0}`,
+  );
   console.log(`[Init] Initialized and shuffled ${ALL_BUCKETS.length} total buckets.`);
 }
 
@@ -1327,7 +1376,7 @@ async function callGitHub(keys, models, messages, options = {}) {
     if (!selectedBucket) {
       waitLoops++;
       if (waitLoops > 120) {
-        throw lastError || new Error("All buckets permanently exhausted or cooling â€” giving up.");
+        throw lastError || new Error("All buckets permanently exhausted or cooling - giving up.");
       }
       await new Promise(r => setTimeout(r, 500));
       attempt--; 
@@ -1364,6 +1413,7 @@ async function callGitHub(keys, models, messages, options = {}) {
     const timeoutMs = options.timeoutMs || 180000;
     recordProviderStat(selectedProvider, "requests");
     console.log(`[REQ #${requestId}][${selectedProvider}] start | model=${selectedModel} | route=${route} | attempt=${attempt + 1}/${attempts} | max_tokens=${requestMaxTokens} | timeout_ms=${timeoutMs}`);
+    const requestStartedAt = Date.now();
 
     try {
       await new Promise(r => setTimeout(r, Math.random() * 250));
@@ -1398,7 +1448,22 @@ async function callGitHub(keys, models, messages, options = {}) {
         lastError = new Error(errMsg);
         recordProviderStat(selectedProvider, "failures");
         if (res.status === 429) recordProviderStat(selectedProvider, "rate429s");
+        const errorDetails = providerErrorDetails(data);
         console.log(`[REQ #${requestId}][${selectedProvider}] provider_error | status=${res.status} | model=${selectedModel} | ${providerErrorSummary(data)}`);
+        emitPhase1AttemptTelemetry({
+          request_id: requestId,
+          provider: selectedProvider,
+          model: selectedModel,
+          route,
+          attempt: attempt + 1,
+          attempts,
+          max_tokens: requestMaxTokens,
+          timeout_ms: timeoutMs,
+          status: "provider_error",
+          http_status: res.status,
+          latency_ms: Date.now() - requestStartedAt,
+          ...errorDetails,
+        });
         totalFailures++;
 
         if (res.status === 429) {
@@ -1414,10 +1479,10 @@ async function callGitHub(keys, models, messages, options = {}) {
             coolingBucket.set(selectedBucket, Date.now() + cooldownMs);
           }
         } else if (res.status === 400 && (data?.error?.code === 'organization_restricted' || data?.error?.code === 'invalid_api_key')) {
-          // Permanently dead key â€” mark as exhausted so we never retry it
+          // Permanently dead key - mark as exhausted so we never retry it
           tpdExhausted.set(selectedBucket, true);
         } else if (res.status === 401) {
-          // Invalid key â€” permanently exhaust
+          // Invalid key - permanently exhaust
           tpdExhausted.set(selectedBucket, true);
         } else if (res.status >= 500 && selectedProvider === 'github') {
           const proxyStr2 = keyProxyMap.get(selectedKey);
@@ -1436,34 +1501,108 @@ async function callGitHub(keys, models, messages, options = {}) {
       
       // Strip <think>...</think> reasoning blocks (reasoning models like qwen3)
       let content = (data?.choices?.[0]?.message?.content || data?.choices?.[0]?.text || "");
+      const finishReason = data?.choices?.[0]?.finish_reason || 'unknown';
+      const usage = data.usage || {};
       if (content.includes('<think>')) {
         // If properly closed, strip the block
         content = content.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
-        // If still starts with <think> (unclosed â€” model was cut off mid-reasoning), discard
+        // If still starts with <think> (unclosed - model was cut off mid-reasoning), discard
         if (content.startsWith('<think>') || content.trim() === '') {
-          lastError = new Error('Model returned unclosed <think> block â€” output discarded.');
+          lastError = new Error('Model returned unclosed <think> block - output discarded.');
           recordProviderStat(selectedProvider, "failures");
           console.log(`[REQ #${requestId}][${selectedProvider}] rejected | model=${selectedModel} | reason=unclosed_think_block | chars=${content.length}`);
+          emitPhase1AttemptTelemetry({
+            request_id: requestId,
+            provider: selectedProvider,
+            model: selectedModel,
+            route,
+            attempt: attempt + 1,
+            attempts,
+            max_tokens: requestMaxTokens,
+            timeout_ms: timeoutMs,
+            status: "rejected",
+            http_status: res.status,
+            finish_reason: finishReason,
+            prompt_tokens: usage.prompt_tokens,
+            completion_tokens: usage.completion_tokens,
+            total_tokens: usage.total_tokens,
+            chars: content.length,
+            latency_ms: Date.now() - requestStartedAt,
+            error_type: "invalid_model_output",
+            error_code: "unclosed_think_block",
+            error_message: "Model returned an unclosed think block.",
+          });
           totalFailures++;
           continue;
         }
       }
-      const finishReason = data?.choices?.[0]?.finish_reason || 'unknown';
-      const usage = data.usage || {};
-      console.log(`[REQ #${requestId}][${selectedProvider}] success | status=${res.status} | model=${selectedModel} | finish=${finishReason} | in=${usage.prompt_tokens || '?'} | out=${usage.completion_tokens || '?'} | chars=${content.length}`);
       if (!content.trim()) {
         lastError = new Error("Models returned empty content.");
         recordProviderStat(selectedProvider, "failures");
         console.log(`[REQ #${requestId}][${selectedProvider}] rejected | model=${selectedModel} | reason=empty_content | finish=${finishReason}`);
+        emitPhase1AttemptTelemetry({
+          request_id: requestId,
+          provider: selectedProvider,
+          model: selectedModel,
+          route,
+          attempt: attempt + 1,
+          attempts,
+          max_tokens: requestMaxTokens,
+          timeout_ms: timeoutMs,
+          status: "rejected",
+          http_status: res.status,
+          finish_reason: finishReason,
+          prompt_tokens: usage.prompt_tokens,
+          completion_tokens: usage.completion_tokens,
+          total_tokens: usage.total_tokens,
+          chars: content.length,
+          latency_ms: Date.now() - requestStartedAt,
+          error_type: "invalid_model_output",
+          error_code: "empty_content",
+          error_message: "Provider returned empty content.",
+        });
         totalFailures++;
         continue;
       }
       recordProviderStat(selectedProvider, "successes");
+      console.log(`[REQ #${requestId}][${selectedProvider}] success | status=${res.status} | model=${selectedModel} | finish=${finishReason} | in=${usage.prompt_tokens || '?'} | out=${usage.completion_tokens || '?'} | chars=${content.length}`);
+      emitPhase1AttemptTelemetry({
+        request_id: requestId,
+        provider: selectedProvider,
+        model: selectedModel,
+        route,
+        attempt: attempt + 1,
+        attempts,
+        max_tokens: requestMaxTokens,
+        timeout_ms: timeoutMs,
+        status: "success",
+        http_status: res.status,
+        finish_reason: finishReason,
+        prompt_tokens: usage.prompt_tokens,
+        completion_tokens: usage.completion_tokens,
+        total_tokens: usage.total_tokens,
+        chars: content.length,
+        latency_ms: Date.now() - requestStartedAt,
+      });
       return { content: content.trim(), model: selectedModel, usage, finishReason };
     } catch (err) {
       lastError = err;
       recordProviderStat(selectedProvider, "failures");
+      const errorDetails = transportErrorDetails(err);
       console.log(`[REQ #${requestId}][${selectedProvider}] transport_error | model=${selectedModel} | ${transportErrorSummary(err)}`);
+      emitPhase1AttemptTelemetry({
+        request_id: requestId,
+        provider: selectedProvider,
+        model: selectedModel,
+        route,
+        attempt: attempt + 1,
+        attempts,
+        max_tokens: requestMaxTokens,
+        timeout_ms: timeoutMs,
+        status: "transport_error",
+        latency_ms: Date.now() - requestStartedAt,
+        ...errorDetails,
+      });
       totalFailures++;
       if (proxyStr && (err.code === 'ECONNRESET' || err.code === 'ETIMEDOUT' || err.name === 'TimeoutError')) {
         const ph = proxyHealth.get(proxyStr) || { failures: 0 };
@@ -2398,7 +2537,9 @@ async function generateGithubPhase1Synthesis(options) {
   ensureDir(path.join(cacheDir, "chunk_summaries"));
 
   log(`GitHub staged synthesis for ${topicName} (${promptType})`);
-  log(`Models: ${models.join(", ")}`);
+  log(`GitHub bucket models: ${models.join(", ")}`);
+  const finalModels = finalModelAllowlist();
+  log(`Final/audit/repair model allowlist: ${finalModels.length ? finalModels.join(", ") : "(all loaded buckets)"}`);
 
   const sources = discoverTranscriptFiles(transcriptsDir, files);
   if (!sources.length) throw new Error("No transcript files found for GitHub Phase 1 synthesis.");
@@ -2577,7 +2718,7 @@ async function generateGithubPhase1Synthesis(options) {
       expandResult.text.length < preExpandText.length;
 
     if (!expandResult.finishedNaturally) {
-      log(`Expand hit output limit â€” keeping pre-expand text (${preExpandText.length} chars)`);
+      log(`Expand hit output limit - keeping pre-expand text (${preExpandText.length} chars)`);
       finalText = preExpandText;
     } else if (expandResult.text.length < preExpandText.length * 0.85 && !usefulShorterAlignment) {
       log(

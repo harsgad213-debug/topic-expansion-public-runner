@@ -68,7 +68,7 @@ on:
         required: false
         default: "qwen/qwen3.6-27b,openai/gpt-oss-120b,openai/gpt-oss-safeguard-20b,openai/gpt-oss-20b,llama-3.3-70b-versatile"
       groq_only:
-        description: "Skip GitHub buckets entirely — run Groq models only (for qualification)"
+        description: "Skip GitHub buckets entirely - run Groq models only (for qualification)"
         required: false
         default: "false"
       mistral_phase1_models:
@@ -76,11 +76,11 @@ on:
         required: false
         default: "mistral-large-2512"
       mistral_only:
-        description: "Skip GitHub buckets entirely — run Mistral models only (for qualification)"
+        description: "Skip GitHub buckets entirely - run Mistral models only (for qualification)"
         required: false
         default: "false"
       github_only:
-        description: "Skip Groq and Mistral buckets entirely — run GitHub models only (for qualification)"
+        description: "Skip Groq and Mistral buckets entirely - run GitHub models only (for qualification)"
         required: false
         default: "false"
       use_all_keys:
@@ -229,9 +229,9 @@ jobs:
             echo "No GitHub Models key secret configured for this shard."
             exit 2
           fi
-          key_count="$(SELECTED_KEYS="$selected" node -e 'const raw=process.env.SELECTED_KEYS||""; console.log(raw.split(/[\n,;]+/).map(s=>s.trim()).filter(Boolean).length)')"
+          key_count="$(SELECTED_KEYS="$selected" node -e 'const raw=process.env.SELECTED_KEYS||""; const keys=[...new Set(raw.split(/[\n,;]+/).map(s=>s.trim()).filter(Boolean))]; console.log(keys.length)')"
           echo "Selected key shard slot: $index"
-          echo "Selected key count: $key_count"
+          echo "Selected unique GitHub key count: $key_count"
           {
             echo "GITHUB_KEYS<<__GITHUB_KEYS__"
             echo "$selected"

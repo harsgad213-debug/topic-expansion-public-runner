@@ -449,9 +449,11 @@ setInterval(() => {
       `  Unknown: ${((total429_Unknown / total429s) * 100).toFixed(1)}%`,
     );
   }
-  console.log(`Provider Stats:  Reqs    | OK      | Fail    | 429s    | Succ%`);
-  for (const [p, s] of Object.entries(providerStats)) {
-    if (s.requests === 0) continue;
+  const legacyProviders = Object.entries(providerStats).filter(([, s]) => s.requests > 0);
+  if (legacyProviders.length > 0) {
+    console.log(`Legacy Router Provider Stats (non-Phase1):  Reqs    | OK      | Fail    | 429s    | Succ%`);
+  }
+  for (const [p, s] of legacyProviders) {
     const succRate = ((s.successes / s.requests) * 100).toFixed(1);
     console.log(
       `  ${p.padEnd(12)} ${String(s.requests).padStart(7)} | ${String(s.successes).padStart(7)} | ${String(s.failures).padStart(7)} | ${String(s.rate429s).padStart(7)} | ${succRate}%`,
