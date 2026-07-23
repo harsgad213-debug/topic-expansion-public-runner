@@ -58,7 +58,7 @@ on:
       github_phase1_models:
         description: "Comma-separated GitHub Models list for Phase 1 synthesis"
         required: true
-        default: "openai/gpt-4o-mini,openai/gpt-4.1-mini,mistral-ai/codestral-2501,meta/llama-3.3-70b-instruct,mistral-ai/mistral-medium-2505,openai/gpt-4o,openai/gpt-4.1,deepseek/deepseek-v3-0324,deepseek/deepseek-r1-0528,deepseek/deepseek-r1,meta/llama-4-maverick-17b-128e-instruct-fp8,microsoft/phi-4"
+        default: "openai/gpt-4o-mini,openai/gpt-4.1-mini,mistral-ai/codestral-2501,mistral-ai/mistral-medium-2505,openai/gpt-4o,openai/gpt-4.1"
       phase1_final_models:
         description: "Optional comma-separated model allowlist for final synthesis, audit, patch, and alignment calls. Leave empty to use all loaded buckets."
         required: false

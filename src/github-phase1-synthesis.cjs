@@ -6,13 +6,7 @@ const GITHUB_ENDPOINT = "https://models.github.ai/inference/chat/completions";
 const GROQ_ENDPOINT   = "https://api.groq.com/openai/v1/chat/completions";
 const MISTRAL_ENDPOINT = "https://api.mistral.ai/v1/chat/completions";
 
-const GROQ_MODELS_DEFAULT = [
-  'openai/gpt-oss-120b',
-  'openai/gpt-oss-20b',
-  'llama-3.3-70b-versatile',
-  'qwen/qwen3.6-27b',
-  'groq/compound',
-];
+const GROQ_MODELS_DEFAULT = [];
 const PROMPT_TYPES = new Set(["full_book", "unit_overview", "knowledge_map"]);
 const CHUNK_CHARS = Number(process.env.GITHUB_PHASE1_CHUNK_CHARS || 12000);
 const CHUNK_OVERLAP = Number(process.env.GITHUB_PHASE1_CHUNK_OVERLAP || 800);
@@ -91,6 +85,8 @@ function initBuckets(keys, models) {
   const groqOnly = process.env.GROQ_ONLY === 'true';
   const mistralOnly = process.env.MISTRAL_ONLY === 'true';
   const githubOnly = process.env.GITHUB_ONLY === 'true';
+  const disableGroq = process.env.DISABLE_GROQ === 'true';
+  const disableMistral = process.env.DISABLE_MISTRAL === 'true';
 
   // --- GitHub buckets (skip when groq_only or mistral_only) ---
   if (!groqOnly && !mistralOnly) {
@@ -113,7 +109,9 @@ function initBuckets(keys, models) {
   const groqKeys = groqKeysRaw.split(/[\n,;]+/).map(k => k.trim()).filter(k => k.startsWith('gsk_'));
   const groqModelsRaw = process.env.GROQ_PHASE1_MODELS || GROQ_MODELS_DEFAULT.join(',');
   const groqModels = groqModelsRaw.split(',').map(m => m.trim()).filter(Boolean);
-  if (!mistralOnly && !githubOnly && groqKeys.length > 0) {
+  if (disableGroq) {
+    console.log('[Init] Skipping Groq buckets due to DISABLE_GROQ.');
+  } else if (!mistralOnly && !githubOnly && groqKeys.length > 0 && groqModels.length > 0) {
     for (const k of groqKeys) {
       if (proxyList.length > 0) {
         const pIdx = Math.abs(k.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0)) % proxyList.length;
@@ -132,7 +130,9 @@ function initBuckets(keys, models) {
   const mistralKeys = mistralKeysRaw.split(/[\n,;]+/).map(k => k.trim()).filter(Boolean);
   const mistralModelsRaw = process.env.MISTRAL_PHASE1_MODELS || '';
   const mistralModels = mistralModelsRaw.split(',').map(m => m.trim()).filter(Boolean);
-  if (!groqOnly && !githubOnly && mistralKeys.length > 0) {
+  if (disableMistral) {
+    console.log('[Init] Skipping Mistral buckets due to DISABLE_MISTRAL.');
+  } else if (!groqOnly && !githubOnly && mistralKeys.length > 0 && mistralModels.length > 0) {
     for (const k of mistralKeys) {
       if (proxyList.length > 0) {
         const pIdx = Math.abs(k.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0)) % proxyList.length;
