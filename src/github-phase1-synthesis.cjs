@@ -2466,10 +2466,15 @@ async function generateGithubPhase1Synthesis(options) {
       targetLength,
       coveragePlan,
     );
+    const minUsefulAlignedChars = Math.round(targetLength * 0.82);
+    const usefulShorterAlignment =
+      expandResult.text.length >= minUsefulAlignedChars &&
+      expandResult.text.length < preExpandText.length;
+
     if (!expandResult.finishedNaturally) {
       log(`Expand hit output limit â€” keeping pre-expand text (${preExpandText.length} chars)`);
       finalText = preExpandText;
-    } else if (expandResult.text.length < preExpandText.length * 0.85) {
+    } else if (expandResult.text.length < preExpandText.length * 0.85 && !usefulShorterAlignment) {
       log(
         `Expand returned shorter output (${expandResult.text.length} chars vs ${preExpandText.length}); keeping pre-expand text`,
       );
