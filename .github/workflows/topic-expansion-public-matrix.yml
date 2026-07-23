@@ -75,6 +75,10 @@ on:
         description: "Skip GitHub buckets entirely — run Mistral models only (for qualification)"
         required: false
         default: "false"
+      github_only:
+        description: "Skip Groq and Mistral buckets entirely — run GitHub models only (for qualification)"
+        required: false
+        default: "false"
       use_all_keys:
         description: "Use the combined GH_MODELS_KEYS secret (all keys) instead of per-shard slices. Set true for qualification/test runs."
         required: false
@@ -133,6 +137,7 @@ jobs:
       MISTRAL_KEYS: ${{ secrets.MISTRAL_KEYS }}
       MISTRAL_PHASE1_MODELS: ${{ inputs.mistral_phase1_models }}
       MISTRAL_ONLY: ${{ inputs.mistral_only }}
+      GITHUB_ONLY: ${{ inputs.github_only }}
       DISABLE_GROQ: "true"
       DISABLE_GEMINI: "true"
       DISABLE_CEREBRAS: "true"
