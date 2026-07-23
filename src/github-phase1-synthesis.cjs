@@ -44,9 +44,9 @@ let totalRequests = 0;
 let totalFailures = 0;
 const metadataFileCache = new Map();
 const phase1ProviderStats = {
-  github: { requests: 0, successes: 0, failures: 0, rate429s: 0 },
-  groq: { requests: 0, successes: 0, failures: 0, rate429s: 0 },
-  mistral: { requests: 0, successes: 0, failures: 0, rate429s: 0 },
+  github: { requests: 0, successes: 0, failures: 0, rate429s: 0, cooldowns: 0, dailyExhausted: 0, keyExhausted: 0 },
+  groq: { requests: 0, successes: 0, failures: 0, rate429s: 0, cooldowns: 0, dailyExhausted: 0, keyExhausted: 0 },
+  mistral: { requests: 0, successes: 0, failures: 0, rate429s: 0, cooldowns: 0, dailyExhausted: 0, keyExhausted: 0 },
 };
 
 function compactLogValue(value, maxLen = 260) {
@@ -111,6 +111,10 @@ function emitPhase1AttemptTelemetry(event) {
     total_tokens: event.total_tokens ?? null,
     chars: event.chars ?? null,
     latency_ms: event.latency_ms ?? null,
+    action: event.action ?? null,
+    action_reason: event.action_reason ?? null,
+    cooldown_ms: event.cooldown_ms ?? null,
+    exhausted_buckets: event.exhausted_buckets ?? null,
     error_type: event.error_type ?? null,
     error_code: event.error_code ?? null,
     error_message: event.error_message ? compactLogValue(event.error_message) : null,
@@ -119,7 +123,7 @@ function emitPhase1AttemptTelemetry(event) {
 
 function recordProviderStat(provider, field) {
   if (!phase1ProviderStats[provider]) {
-    phase1ProviderStats[provider] = { requests: 0, successes: 0, failures: 0, rate429s: 0 };
+    phase1ProviderStats[provider] = { requests: 0, successes: 0, failures: 0, rate429s: 0, cooldowns: 0, dailyExhausted: 0, keyExhausted: 0 };
   }
   phase1ProviderStats[provider][field] = (phase1ProviderStats[provider][field] || 0) + 1;
 }
@@ -129,7 +133,7 @@ function providerStatsSummary() {
     .filter(([, stats]) => stats.requests || stats.successes || stats.failures || stats.rate429s)
     .map(([provider, stats]) => {
       const successRate = stats.requests ? ((stats.successes / stats.requests) * 100).toFixed(1) : "0.0";
-      return `${provider}: req=${stats.requests}, ok=${stats.successes}, fail=${stats.failures}, 429=${stats.rate429s}, success=${successRate}%`;
+      return `${provider}: req=${stats.requests}, ok=${stats.successes}, fail=${stats.failures}, 429=${stats.rate429s}, cooldown=${stats.cooldowns || 0}, daily=${stats.dailyExhausted || 0}, key_dead=${stats.keyExhausted || 0}, success=${successRate}%`;
     })
     .join(" | ");
 }
@@ -138,6 +142,97 @@ function cloneProviderStats() {
   return Object.fromEntries(
     Object.entries(phase1ProviderStats).map(([provider, stats]) => [provider, { ...stats }]),
   );
+}
+
+function isDailyQuota429(provider, bodyText, headers) {
+  const rateLimitType = String(headers?.get?.("x-ratelimit-type") || "").toLowerCase();
+  if (provider === "github") {
+    return (
+      rateLimitType === "userbymodelbyday" ||
+      bodyText.includes("tokens per day") ||
+      bodyText.includes("requests per day") ||
+      bodyText.includes("userbymodelbyday")
+    );
+  }
+  if (provider === "groq") {
+    return (
+      bodyText.includes("tokens per day") ||
+      bodyText.includes("requests per day") ||
+      bodyText.includes("(tpd)") ||
+      bodyText.includes("(rpd)")
+    );
+  }
+  if (provider === "mistral") {
+    return bodyText.includes("per day") || bodyText.includes("daily quota");
+  }
+  return false;
+}
+
+function providerFailureAction(provider, res, data, text) {
+  const err = data?.error || {};
+  const code = String(err.code || data?.code || "").toLowerCase();
+  const message = String(err.message || data?.message || data?.raw || text || "").toLowerCase();
+  const bodyText = `${message} ${String(text || "").toLowerCase()}`;
+
+  if (res.status === 429) {
+    if (isDailyQuota429(provider, bodyText, res.headers)) {
+      return { action: "exhaust_bucket", reason: "daily_or_tpd_quota" };
+    }
+    const retryAfter = Number.parseFloat(res.headers.get("retry-after") || "");
+    const cooldownMs = Number.isFinite(retryAfter) && retryAfter > 0
+      ? Math.round(retryAfter * 1000)
+      : provider === "groq"
+        ? 30000
+        : 60000;
+    return { action: "cooldown_bucket", reason: "minute_rate_limit", cooldownMs };
+  }
+
+  if (
+    res.status === 401 ||
+    code === "invalid_api_key" ||
+    code === "organization_restricted" ||
+    message.includes("invalid api key") ||
+    message.includes("organization has been restricted") ||
+    message.includes("billing") ||
+    message.includes("credits are depleted") ||
+    message.includes("prepayment")
+  ) {
+    return { action: "exhaust_key", reason: code || "auth_or_billing_blocked" };
+  }
+
+  if (res.status === 413 || code === "request_too_large" || message.includes("request entity too large")) {
+    return { action: "cooldown_bucket", reason: "request_too_large", cooldownMs: 300000 };
+  }
+
+  return { action: "retry_next_bucket", reason: `http_${res.status}` };
+}
+
+function exhaustProviderKey(provider, key) {
+  let exhausted = 0;
+  for (const bucket of ALL_BUCKETS) {
+    if (bucket.provider === provider && bucket.key === key && !tpdExhausted.get(bucket.id)) {
+      tpdExhausted.set(bucket.id, true);
+      exhausted++;
+    }
+  }
+  return exhausted;
+}
+
+function phase1PoolState() {
+  const now = Date.now();
+  const state = {};
+  for (const bucket of ALL_BUCKETS) {
+    if (!state[bucket.provider]) {
+      state[bucket.provider] = { total: 0, available: 0, in_flight: 0, cooling: 0, exhausted: 0 };
+    }
+    const providerState = state[bucket.provider];
+    providerState.total++;
+    if (tpdExhausted.get(bucket.id)) providerState.exhausted++;
+    else if ((inFlightBucket.get(bucket.id) || 0) > 0) providerState.in_flight++;
+    else if ((coolingBucket.get(bucket.id) || 0) > now) providerState.cooling++;
+    else providerState.available++;
+  }
+  return state;
 }
 
 // --- RESILIENCY STATES ---
@@ -1458,7 +1553,26 @@ async function callGitHub(keys, models, messages, options = {}) {
         recordProviderStat(selectedProvider, "failures");
         if (res.status === 429) recordProviderStat(selectedProvider, "rate429s");
         const errorDetails = providerErrorDetails(data);
-        console.log(`[REQ #${requestId}][${selectedProvider}] provider_error | status=${res.status} | model=${selectedModel} | route=${route} | proxy=${proxyLabel} | ${providerErrorSummary(data)}`);
+        const failureAction = providerFailureAction(selectedProvider, res, data, text);
+        let exhaustedBuckets = 0;
+        if (failureAction.action === "exhaust_bucket") {
+          tpdExhausted.set(selectedBucket, true);
+          exhaustedBuckets = 1;
+          recordProviderStat(selectedProvider, "dailyExhausted");
+        } else if (failureAction.action === "exhaust_key") {
+          exhaustedBuckets = exhaustProviderKey(selectedProvider, selectedKey);
+          recordProviderStat(selectedProvider, "keyExhausted");
+        } else if (failureAction.action === "cooldown_bucket") {
+          coolingBucket.set(selectedBucket, Date.now() + failureAction.cooldownMs);
+          recordProviderStat(selectedProvider, "cooldowns");
+        }
+        const actionParts = [
+          `action=${failureAction.action}`,
+          `reason=${failureAction.reason}`,
+        ];
+        if (failureAction.cooldownMs) actionParts.push(`cooldown_ms=${failureAction.cooldownMs}`);
+        if (exhaustedBuckets) actionParts.push(`exhausted_buckets=${exhaustedBuckets}`);
+        console.log(`[REQ #${requestId}][${selectedProvider}] provider_error | status=${res.status} | model=${selectedModel} | route=${route} | proxy=${proxyLabel} | ${actionParts.join(" | ")} | ${providerErrorSummary(data)}`);
         emitPhase1AttemptTelemetry({
           request_id: requestId,
           provider: selectedProvider,
@@ -1472,29 +1586,15 @@ async function callGitHub(keys, models, messages, options = {}) {
           status: "provider_error",
           http_status: res.status,
           latency_ms: Date.now() - requestStartedAt,
+          action: failureAction.action,
+          action_reason: failureAction.reason,
+          cooldown_ms: failureAction.cooldownMs,
+          exhausted_buckets: exhaustedBuckets || null,
           ...errorDetails,
         });
         totalFailures++;
 
-        if (res.status === 429) {
-          const bodyText = (text || "").toLowerCase();
-          // GitHub TPD exhaustion
-          if (selectedProvider === 'github' && (bodyText.includes("tokens per day") || res.headers.get("x-ratelimit-type") === "UserByModelByDay")) {
-            tpdExhausted.set(selectedBucket, true);
-          } else {
-            // Use retry-after if provided, else 60s for GitHub, 30s for Groq
-            const retryAfter = res.headers.get("retry-after");
-            const defaultCool = selectedProvider === 'groq' ? 30000 : 60000;
-            const cooldownMs = retryAfter ? parseFloat(retryAfter) * 1000 : defaultCool;
-            coolingBucket.set(selectedBucket, Date.now() + cooldownMs);
-          }
-        } else if (res.status === 400 && (data?.error?.code === 'organization_restricted' || data?.error?.code === 'invalid_api_key')) {
-          // Permanently dead key - mark as exhausted so we never retry it
-          tpdExhausted.set(selectedBucket, true);
-        } else if (res.status === 401) {
-          // Invalid key - permanently exhaust
-          tpdExhausted.set(selectedBucket, true);
-        } else if (res.status >= 500 && selectedProvider === 'github') {
+        if (res.status >= 500 && selectedProvider === 'github') {
           const proxyStr2 = keyProxyMap.get(selectedKey);
           if (proxyStr2) {
             const ph = proxyHealth.get(proxyStr2) || { failures: 0 };
@@ -2795,6 +2895,7 @@ async function generateGithubPhase1Synthesis(options) {
     total_requests: totalRequests,
     total_call_failures: totalFailures,
     provider_stats: cloneProviderStats(),
+    pool_state: phase1PoolState(),
   });
   log(`${promptType}: chars=${finalText.length}, requests=${totalRequests}, failures=${totalFailures}, providers=(${providerStatsSummary()})`);
   return finalText;
@@ -2807,5 +2908,6 @@ module.exports = {
     total_requests: totalRequests,
     total_call_failures: totalFailures,
     provider_stats: cloneProviderStats(),
+    pool_state: phase1PoolState(),
   }),
 };
