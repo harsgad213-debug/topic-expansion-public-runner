@@ -785,6 +785,16 @@ function deterministicQualityIssues(type, output, baseline, targetLength, covera
   return [...shapeIssues, ...coveragePlanIssues(type, output, coveragePlan)];
 }
 
+function alignmentCandidateScore(type, output, baseline, targetLength, coveragePlan) {
+  const issues = deterministicQualityIssues(type, output, baseline, targetLength, coveragePlan);
+  const lengthDistance = Math.abs(output.length - targetLength) / Math.max(1, targetLength);
+  const endingPenalty = endingQuality(output).suspicious ? 2 : 0;
+  return {
+    issues,
+    score: issues.length * 100 + endingPenalty * 25 + lengthDistance * 10,
+  };
+}
+
 function extractJson(text) {
   const trimmed = String(text || "").trim();
   const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
@@ -2430,6 +2440,13 @@ async function generateGithubPhase1Synthesis(options) {
 
   let finalMetrics = deterministicMetrics(finalText, baseline.length);
   let finalLocalIssues = deterministicQualityIssues(promptType, finalText, baseline, targetLength, coveragePlan);
+  let bestAlignment = {
+    text: finalText,
+    audit: finalAudit,
+    metrics: finalMetrics,
+    issues: finalLocalIssues,
+    score: alignmentCandidateScore(promptType, finalText, baseline, targetLength, coveragePlan).score,
+  };
   let alignmentPasses = 0;
   while (alignmentPasses < 3) {
     const tooShort = baseline.length
@@ -2494,6 +2511,26 @@ async function generateGithubPhase1Synthesis(options) {
     );
     finalMetrics = deterministicMetrics(finalText, baseline.length);
     finalLocalIssues = deterministicQualityIssues(promptType, finalText, baseline, targetLength, coveragePlan);
+    const candidate = alignmentCandidateScore(promptType, finalText, baseline, targetLength, coveragePlan);
+    if (candidate.score < bestAlignment.score) {
+      bestAlignment = {
+        text: finalText,
+        audit: finalAudit,
+        metrics: finalMetrics,
+        issues: finalLocalIssues,
+        score: candidate.score,
+      };
+    }
+  }
+
+  if (bestAlignment.text !== finalText) {
+    log(
+      `Using best alignment candidate for ${promptType}; chars=${bestAlignment.text.length}, deterministic_issues=${bestAlignment.issues.length}`,
+    );
+    finalText = bestAlignment.text;
+    finalAudit = bestAlignment.audit;
+    finalMetrics = bestAlignment.metrics;
+    finalLocalIssues = bestAlignment.issues;
   }
 
   const finalPath = path.join(cacheDir, `${safeSegment(topicName)}_${promptType}_github_phase1.md`);
