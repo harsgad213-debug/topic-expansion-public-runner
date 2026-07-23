@@ -44,9 +44,9 @@ let totalRequests = 0;
 let totalFailures = 0;
 const metadataFileCache = new Map();
 const phase1ProviderStats = {
-  github: { requests: 0, successes: 0, failures: 0, rate429s: 0, cooldowns: 0, dailyExhausted: 0, keyExhausted: 0 },
-  groq: { requests: 0, successes: 0, failures: 0, rate429s: 0, cooldowns: 0, dailyExhausted: 0, keyExhausted: 0 },
-  mistral: { requests: 0, successes: 0, failures: 0, rate429s: 0, cooldowns: 0, dailyExhausted: 0, keyExhausted: 0 },
+  github: { requests: 0, successes: 0, failures: 0, rate429s: 0, cooldowns: 0, dailyExhausted: 0, bucketExhausted: 0, keyExhausted: 0 },
+  groq: { requests: 0, successes: 0, failures: 0, rate429s: 0, cooldowns: 0, dailyExhausted: 0, bucketExhausted: 0, keyExhausted: 0 },
+  mistral: { requests: 0, successes: 0, failures: 0, rate429s: 0, cooldowns: 0, dailyExhausted: 0, bucketExhausted: 0, keyExhausted: 0 },
 };
 
 function compactLogValue(value, maxLen = 260) {
@@ -123,7 +123,7 @@ function emitPhase1AttemptTelemetry(event) {
 
 function recordProviderStat(provider, field) {
   if (!phase1ProviderStats[provider]) {
-    phase1ProviderStats[provider] = { requests: 0, successes: 0, failures: 0, rate429s: 0, cooldowns: 0, dailyExhausted: 0, keyExhausted: 0 };
+    phase1ProviderStats[provider] = { requests: 0, successes: 0, failures: 0, rate429s: 0, cooldowns: 0, dailyExhausted: 0, bucketExhausted: 0, keyExhausted: 0 };
   }
   phase1ProviderStats[provider][field] = (phase1ProviderStats[provider][field] || 0) + 1;
 }
@@ -133,7 +133,7 @@ function providerStatsSummary() {
     .filter(([, stats]) => stats.requests || stats.successes || stats.failures || stats.rate429s)
     .map(([provider, stats]) => {
       const successRate = stats.requests ? ((stats.successes / stats.requests) * 100).toFixed(1) : "0.0";
-      return `${provider}: req=${stats.requests}, ok=${stats.successes}, fail=${stats.failures}, 429=${stats.rate429s}, cooldown=${stats.cooldowns || 0}, daily=${stats.dailyExhausted || 0}, key_dead=${stats.keyExhausted || 0}, success=${successRate}%`;
+      return `${provider}: req=${stats.requests}, ok=${stats.successes}, fail=${stats.failures}, 429=${stats.rate429s}, cooldown=${stats.cooldowns || 0}, daily=${stats.dailyExhausted || 0}, bucket_dead=${stats.bucketExhausted || 0}, key_dead=${stats.keyExhausted || 0}, success=${successRate}%`;
     })
     .join(" | ");
 }
@@ -196,6 +196,14 @@ function providerFailureAction(provider, res, data, text) {
     message.includes("prepayment")
   ) {
     return { action: "exhaust_key", reason: code || "auth_or_billing_blocked" };
+  }
+
+  if (
+    code === "no_access" ||
+    message.includes("no access to model") ||
+    res.status === 404
+  ) {
+    return { action: "exhaust_bucket", reason: "model_not_accessible" };
   }
 
   if (res.status === 413 || code === "request_too_large" || message.includes("request entity too large")) {
@@ -1556,7 +1564,10 @@ async function callGitHub(keys, models, messages, options = {}) {
         if (failureAction.action === "exhaust_bucket") {
           tpdExhausted.set(selectedBucket, true);
           exhaustedBuckets = 1;
-          recordProviderStat(selectedProvider, "dailyExhausted");
+          recordProviderStat(
+            selectedProvider,
+            failureAction.reason === "daily_or_tpd_quota" ? "dailyExhausted" : "bucketExhausted",
+          );
         } else if (failureAction.action === "exhaust_key") {
           exhaustedBuckets = exhaustProviderKey(selectedProvider, selectedKey);
           recordProviderStat(selectedProvider, "keyExhausted");

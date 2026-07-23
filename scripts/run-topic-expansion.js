@@ -467,14 +467,14 @@ setInterval(() => {
       ([, s]) => s.requests > 0 || s.successes > 0 || s.failures > 0 || s.rate429s > 0,
     );
     console.log(`GitHub Phase1 Provider Stats:`);
-    console.log(`Provider      Reqs    | OK      | Fail    | 429s    | Cool    | Daily   | KeyDead | Succ%`);
+    console.log(`Provider      Reqs    | OK      | Fail    | 429s    | Cool    | Daily   | Bucket  | KeyDead | Succ%`);
     if (phase1Providers.length === 0) {
       console.log(`  (no Phase 1 provider requests recorded yet)`);
     }
     for (const [p, s] of phase1Providers) {
       const succRate = s.requests ? ((s.successes / s.requests) * 100).toFixed(1) : "0.0";
       console.log(
-        `  ${p.padEnd(12)} ${String(s.requests).padStart(7)} | ${String(s.successes).padStart(7)} | ${String(s.failures).padStart(7)} | ${String(s.rate429s).padStart(7)} | ${String(s.cooldowns || 0).padStart(7)} | ${String(s.dailyExhausted || 0).padStart(7)} | ${String(s.keyExhausted || 0).padStart(7)} | ${succRate}%`,
+        `  ${p.padEnd(12)} ${String(s.requests).padStart(7)} | ${String(s.successes).padStart(7)} | ${String(s.failures).padStart(7)} | ${String(s.rate429s).padStart(7)} | ${String(s.cooldowns || 0).padStart(7)} | ${String(s.dailyExhausted || 0).padStart(7)} | ${String(s.bucketExhausted || 0).padStart(7)} | ${String(s.keyExhausted || 0).padStart(7)} | ${succRate}%`,
       );
     }
     console.log(
@@ -1937,12 +1937,14 @@ async function run() {
     const phase1Total429s = providerRows.reduce((sum, [, s]) => sum + (s.rate429s || 0), 0);
     const phase1Cooldowns = providerRows.reduce((sum, [, s]) => sum + (s.cooldowns || 0), 0);
     const phase1Daily = providerRows.reduce((sum, [, s]) => sum + (s.dailyExhausted || 0), 0);
+    const phase1BucketDead = providerRows.reduce((sum, [, s]) => sum + (s.bucketExhausted || 0), 0);
     const phase1KeyDead = providerRows.reduce((sum, [, s]) => sum + (s.keyExhausted || 0), 0);
     console.log("Phase1 Requests: " + phase1Stats.total_requests);
     console.log("Phase1 Failures/Rejected/Retried: " + phase1Stats.total_call_failures);
     console.log("Phase1 429s: " + phase1Total429s);
     console.log("  -> Cooldown Actions: " + phase1Cooldowns);
     console.log("  -> Daily/TPD Exhausted Buckets: " + phase1Daily);
+    console.log("  -> Model/Bucket Exhausted Actions: " + phase1BucketDead);
     console.log("  -> Key Exhausted Actions: " + phase1KeyDead);
     console.log(
       "Phase1 429 Rate: " +
