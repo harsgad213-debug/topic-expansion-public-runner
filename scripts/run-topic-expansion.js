@@ -450,8 +450,10 @@ setInterval(() => {
     );
   }
   const legacyProviders = Object.entries(providerStats).filter(([, s]) => s.requests > 0);
-  if (legacyProviders.length > 0) {
-    console.log(`Legacy Router Provider Stats (non-Phase1):  Reqs    | OK      | Fail    | 429s    | Succ%`);
+  console.log(`Legacy Router Provider Stats (non-Phase1):`);
+  console.log(`Provider      Reqs    | OK      | Fail    | 429s    | Succ%`);
+  if (legacyProviders.length === 0) {
+    console.log(`  (no legacy router requests in this Stage A run)`);
   }
   for (const [p, s] of legacyProviders) {
     const succRate = ((s.successes / s.requests) * 100).toFixed(1);
@@ -464,18 +466,20 @@ setInterval(() => {
     const phase1Providers = Object.entries(phase1Stats.provider_stats || {}).filter(
       ([, s]) => s.requests > 0 || s.successes > 0 || s.failures > 0 || s.rate429s > 0,
     );
-    if (phase1Providers.length > 0) {
-      console.log(`GitHub Phase1 Provider Stats:`);
-      for (const [p, s] of phase1Providers) {
-        const succRate = s.requests ? ((s.successes / s.requests) * 100).toFixed(1) : "0.0";
-        console.log(
-          `  ${p.padEnd(12)} ${String(s.requests).padStart(7)} | ${String(s.successes).padStart(7)} | ${String(s.failures).padStart(7)} | ${String(s.rate429s).padStart(7)} | ${succRate}%`,
-        );
-      }
+    console.log(`GitHub Phase1 Provider Stats:`);
+    console.log(`Provider      Reqs    | OK      | Fail    | 429s    | Succ%`);
+    if (phase1Providers.length === 0) {
+      console.log(`  (no Phase 1 provider requests recorded yet)`);
+    }
+    for (const [p, s] of phase1Providers) {
+      const succRate = s.requests ? ((s.successes / s.requests) * 100).toFixed(1) : "0.0";
       console.log(
-        `  total_requests=${phase1Stats.total_requests} | total_failures=${phase1Stats.total_call_failures}`,
+        `  ${p.padEnd(12)} ${String(s.requests).padStart(7)} | ${String(s.successes).padStart(7)} | ${String(s.failures).padStart(7)} | ${String(s.rate429s).padStart(7)} | ${succRate}%`,
       );
     }
+    console.log(
+      `  total_requests=${phase1Stats.total_requests} | total_failures=${phase1Stats.total_call_failures}`,
+    );
   }
   console.log(`-------------------\n`);
 
