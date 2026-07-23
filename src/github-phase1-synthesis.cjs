@@ -330,9 +330,23 @@ function coveragePlanHaystack(plan) {
   return parts.filter(Boolean).join("\n");
 }
 
+function sourceSupportedPhrases(haystack, phrases, limit = 20) {
+  const normalizedHaystack = normalizeForMatch(haystack);
+  return uniqueLimited(
+    phrases.filter((phrase) => {
+      const tokens = meaningfulTokens(phrase);
+      if (!tokens.length) return false;
+      const matched = tokens.filter((token) => normalizedHaystack.includes(token)).length;
+      return matched / tokens.length >= 0.7;
+    }),
+    limit,
+  );
+}
+
 function learnedArchetypeFor(type, topicName, coveragePlan) {
   const topic = String(topicName || coveragePlan?.topic || "the topic").trim() || "the topic";
-  const haystack = normalizeForMatch(`${topic}\n${coveragePlanHaystack(coveragePlan)}`);
+  const rawHaystack = `${topic}\n${coveragePlanHaystack(coveragePlan)}`;
+  const haystack = normalizeForMatch(rawHaystack);
   const isAbTesting = haystack.includes("ab testing") || haystack.includes("a b testing");
   const hasSignup =
     /\bsignup\b|\bsign up\b|\bregistration\b|\bregistered\b|\bonboarding\b|\bvisitor\b/.test(haystack);
@@ -357,11 +371,16 @@ function learnedArchetypeFor(type, topicName, coveragePlan) {
       "Worked Example",
       "Final Integrated Framework",
     ];
-    const phrases = [
+    const stylePhrases = [
       "full book",
       "big picture",
-      "why companies need testing",
       "user funnel",
+      "optimization opportunity",
+      "worked example",
+      "final framework",
+    ];
+    const sourcePhrases = sourceSupportedPhrases(rawHaystack, [
+      "why companies need testing",
       "database",
       "email",
       "password",
@@ -370,12 +389,20 @@ function learnedArchetypeFor(type, topicName, coveragePlan) {
       "table stores",
       "registered",
       "customer",
-      "optimization opportunity",
       "designing ab test",
       "statistical thinking",
       "registered users",
       "signup conversion",
       "mobile",
+      "website",
+      "conversion rate",
+      "dashboard",
+      "sql",
+      "tableau",
+    ]);
+    const phrases = [
+      ...stylePhrases,
+      ...sourcePhrases,
     ];
     return {
       labels: uniqueLimited(labels, 14),
@@ -402,18 +429,9 @@ function learnedArchetypeFor(type, topicName, coveragePlan) {
       `${titleTopic} Full Workflow Map`,
       "Final Mental Model",
     ];
-    const phrases = [
+    const stylePhrases = [
       "unit overview",
-      "signup conversion",
-      "mobile",
-      "name email password",
-      "signup page",
-      "signup form",
-      "signup button",
-      "website",
       "problem",
-      "google",
-      "button",
       "control",
       "treatment",
       "confidence level",
@@ -423,6 +441,24 @@ function learnedArchetypeFor(type, topicName, coveragePlan) {
       "full workflow map",
       "final mental model",
     ];
+    const sourcePhrases = sourceSupportedPhrases(rawHaystack, [
+      "signup conversion",
+      "mobile",
+      "name email password",
+      "email password",
+      "signup page",
+      "signup form",
+      "signup button",
+      "website",
+      "google",
+      "button",
+      "conversion rate",
+      "sql",
+      "tableau",
+      "dashboard",
+      "statistical significance",
+    ]);
+    const phrases = [...stylePhrases, ...sourcePhrases];
     return {
       labels: uniqueLimited(labels, 16),
       phrases: uniqueLimited(phrases, 28),
@@ -446,15 +482,23 @@ function learnedArchetypeFor(type, topicName, coveragePlan) {
     "DEEPER RESULTS",
     "COMPLETE FRAMEWORK TO REMEMBER",
   ];
-  const phrases = [
+  const stylePhrases = [
     "knowledge map",
     "master map",
     "user journey mapping",
     "key metrics",
-    "signup success rate",
     "problem",
     "part",
     "map part",
+    "actionable insights",
+    `why ${normalizeForMatch(titleTopic)} is needed`,
+    `${normalizeForMatch(titleTopic)} fundamentals`,
+    `statistics behind ${normalizeForMatch(titleTopic)}`,
+    "deeper results",
+    "complete framework to remember",
+  ];
+  const sourcePhrases = sourceSupportedPhrases(rawHaystack, [
+    "signup success rate",
     "registered",
     "email password",
     "name email password",
@@ -463,15 +507,13 @@ function learnedArchetypeFor(type, topicName, coveragePlan) {
     "google",
     "signup attempts",
     "dashboard story",
-    "actionable insights",
-    "why ab testing is needed",
-    "ab testing fundamentals",
-    "statistics behind ab testing",
-    "deeper results",
-    "complete framework to remember",
     "visitors registrations",
-    "email password",
-  ];
+    "conversion rate",
+    "sql",
+    "tableau",
+    "statistical significance",
+  ]);
+  const phrases = [...stylePhrases, ...sourcePhrases];
   return {
     labels: uniqueLimited(labels, 16),
     phrases: uniqueLimited(phrases, 30),
