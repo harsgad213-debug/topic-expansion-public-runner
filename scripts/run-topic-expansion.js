@@ -12,6 +12,7 @@ const {
 } = require("../src/chatgpt-browser-adapter.cjs");
 const {
   generateGithubPhase1Synthesis,
+  getGithubPhase1Stats,
 } = require("../src/github-phase1-synthesis.cjs");
 
 // Shared browser context â€” launched once, reused across all topics and prompt types
@@ -455,6 +456,24 @@ setInterval(() => {
     console.log(
       `  ${p.padEnd(12)} ${String(s.requests).padStart(7)} | ${String(s.successes).padStart(7)} | ${String(s.failures).padStart(7)} | ${String(s.rate429s).padStart(7)} | ${succRate}%`,
     );
+  }
+  if (USE_GITHUB_PHASE1 && typeof getGithubPhase1Stats === "function") {
+    const phase1Stats = getGithubPhase1Stats();
+    const phase1Providers = Object.entries(phase1Stats.provider_stats || {}).filter(
+      ([, s]) => s.requests > 0 || s.successes > 0 || s.failures > 0 || s.rate429s > 0,
+    );
+    if (phase1Providers.length > 0) {
+      console.log(`GitHub Phase1 Provider Stats:`);
+      for (const [p, s] of phase1Providers) {
+        const succRate = s.requests ? ((s.successes / s.requests) * 100).toFixed(1) : "0.0";
+        console.log(
+          `  ${p.padEnd(12)} ${String(s.requests).padStart(7)} | ${String(s.successes).padStart(7)} | ${String(s.failures).padStart(7)} | ${String(s.rate429s).padStart(7)} | ${succRate}%`,
+        );
+      }
+      console.log(
+        `  total_requests=${phase1Stats.total_requests} | total_failures=${phase1Stats.total_call_failures}`,
+      );
+    }
   }
   console.log(`-------------------\n`);
 

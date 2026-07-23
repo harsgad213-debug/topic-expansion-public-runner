@@ -42,6 +42,57 @@ function nonNegativeEnvInt(name) {
 let totalRequests = 0;
 let totalFailures = 0;
 const metadataFileCache = new Map();
+const phase1ProviderStats = {
+  github: { requests: 0, successes: 0, failures: 0, rate429s: 0 },
+  groq: { requests: 0, successes: 0, failures: 0, rate429s: 0 },
+  mistral: { requests: 0, successes: 0, failures: 0, rate429s: 0 },
+};
+
+function compactLogValue(value, maxLen = 260) {
+  return String(value || "")
+    .replace(/\s+/g, " ")
+    .replace(/[A-Za-z0-9_-]{24,}/g, "[redacted]")
+    .trim()
+    .slice(0, maxLen);
+}
+
+function providerErrorSummary(data) {
+  const err = data?.error || {};
+  const type = compactLogValue(err.type || data?.type || "unknown", 80);
+  const code = compactLogValue(err.code || data?.code || "unknown", 80);
+  const message = compactLogValue(err.message || data?.message || data?.raw || "no provider message");
+  return `type=${type} | code=${code} | message=${message}`;
+}
+
+function transportErrorSummary(err) {
+  const name = compactLogValue(err?.name || "Error", 80);
+  const code = compactLogValue(err?.code || err?.cause?.code || "unknown", 80);
+  const message = compactLogValue(err?.message || "no error message");
+  return `name=${name} | code=${code} | message=${message}`;
+}
+
+function recordProviderStat(provider, field) {
+  if (!phase1ProviderStats[provider]) {
+    phase1ProviderStats[provider] = { requests: 0, successes: 0, failures: 0, rate429s: 0 };
+  }
+  phase1ProviderStats[provider][field] = (phase1ProviderStats[provider][field] || 0) + 1;
+}
+
+function providerStatsSummary() {
+  return Object.entries(phase1ProviderStats)
+    .filter(([, stats]) => stats.requests || stats.successes || stats.failures || stats.rate429s)
+    .map(([provider, stats]) => {
+      const successRate = stats.requests ? ((stats.successes / stats.requests) * 100).toFixed(1) : "0.0";
+      return `${provider}: req=${stats.requests}, ok=${stats.successes}, fail=${stats.failures}, 429=${stats.rate429s}, success=${successRate}%`;
+    })
+    .join(" | ");
+}
+
+function cloneProviderStats() {
+  return Object.fromEntries(
+    Object.entries(phase1ProviderStats).map(([provider, stats]) => [provider, { ...stats }]),
+  );
+}
 
 // --- RESILIENCY STATES ---
 const keyProxyMap = new Map();
@@ -1284,7 +1335,7 @@ async function callGitHub(keys, models, messages, options = {}) {
     }
     waitLoops = 0; 
     
-    totalRequests++;
+    const requestId = ++totalRequests;
     inFlightBucket.set(selectedBucket, (inFlightBucket.get(selectedBucket) || 0) + 1);
     
     let dispatcher = undefined;
@@ -1299,10 +1350,6 @@ async function callGitHub(keys, models, messages, options = {}) {
         }));
       }
       dispatcher = proxyAgents.get(proxyStr);
-      const proxyHost = proxyStr.includes('@') ? proxyStr.split('@')[1] : proxyStr;
-      console.log(`[REQ #${totalRequests}][${selectedProvider}] via proxy ${proxyHost} | key=...${selectedKey.slice(-4)} | model=${selectedModel}`);
-    } else {
-      console.log(`[REQ #${totalRequests}][${selectedProvider}] DIRECT | key=...${selectedKey.slice(-4)} | model=${selectedModel}`);
     }
     
     let url = GITHUB_ENDPOINT;
@@ -1310,6 +1357,13 @@ async function callGitHub(keys, models, messages, options = {}) {
     if (selectedProvider === 'mistral') url = MISTRAL_ENDPOINT;
     
     const userAgent = keyUaMap.get(selectedKey) || "Mozilla/5.0";
+    const requestMaxTokens = selectedProvider === 'groq'
+      ? Math.max(500, Math.min(6000 - Math.ceil(inputChars / 4) - 100, maxTokens * 2))
+      : maxTokens;
+    const route = dispatcher ? "proxy" : "direct";
+    const timeoutMs = options.timeoutMs || 180000;
+    recordProviderStat(selectedProvider, "requests");
+    console.log(`[REQ #${requestId}][${selectedProvider}] start | model=${selectedModel} | route=${route} | attempt=${attempt + 1}/${attempts} | max_tokens=${requestMaxTokens} | timeout_ms=${timeoutMs}`);
 
     try {
       await new Promise(r => setTimeout(r, Math.random() * 250));
@@ -1327,14 +1381,12 @@ async function callGitHub(keys, models, messages, options = {}) {
           messages,
           // Groq ceiling: 6000 tokens (llama-3.1-8b-instant has 6K TPM, the lowest of our models).
           // Dynamically compute max output = 6000 - estimated_input_tokens - 100 buffer.
-          max_tokens: selectedProvider === 'groq'
-            ? Math.max(500, Math.min(6000 - Math.ceil(inputChars / 4) - 100, maxTokens * 2))
-            : maxTokens,
+          max_tokens: requestMaxTokens,
           temperature,
           // Disable thinking for qwen models on Groq: saves all token budget for actual output
           ...(selectedModel.includes('qwen') ? { reasoning_effort: 'none' } : {}),
         }),
-        signal: AbortSignal.timeout(options.timeoutMs || 180000),
+        signal: AbortSignal.timeout(timeoutMs),
       });
 
       const text = await res.text();
@@ -1344,7 +1396,9 @@ async function callGitHub(keys, models, messages, options = {}) {
       if (!res.ok) {
         const errMsg = `[${selectedProvider}] HTTP ${res.status}: ${JSON.stringify(data).slice(0, 400)}`;
         lastError = new Error(errMsg);
-        console.log(`[REQ #${totalRequests}][${selectedProvider}] âŒ key=...${selectedKey.slice(-4)} | ${errMsg}`);
+        recordProviderStat(selectedProvider, "failures");
+        if (res.status === 429) recordProviderStat(selectedProvider, "rate429s");
+        console.log(`[REQ #${requestId}][${selectedProvider}] provider_error | status=${res.status} | model=${selectedModel} | ${providerErrorSummary(data)}`);
         totalFailures++;
 
         if (res.status === 429) {
@@ -1388,21 +1442,28 @@ async function callGitHub(keys, models, messages, options = {}) {
         // If still starts with <think> (unclosed â€” model was cut off mid-reasoning), discard
         if (content.startsWith('<think>') || content.trim() === '') {
           lastError = new Error('Model returned unclosed <think> block â€” output discarded.');
+          recordProviderStat(selectedProvider, "failures");
+          console.log(`[REQ #${requestId}][${selectedProvider}] rejected | model=${selectedModel} | reason=unclosed_think_block | chars=${content.length}`);
           totalFailures++;
           continue;
         }
       }
       const finishReason = data?.choices?.[0]?.finish_reason || 'unknown';
       const usage = data.usage || {};
-      console.log(`[REQ #${totalRequests}][${selectedProvider}] âœ… model=${selectedModel} | finish=${finishReason} | in=${usage.prompt_tokens || '?'} out=${usage.completion_tokens || '?'} | chars=${content.length}`);
+      console.log(`[REQ #${requestId}][${selectedProvider}] success | status=${res.status} | model=${selectedModel} | finish=${finishReason} | in=${usage.prompt_tokens || '?'} | out=${usage.completion_tokens || '?'} | chars=${content.length}`);
       if (!content.trim()) {
         lastError = new Error("Models returned empty content.");
+        recordProviderStat(selectedProvider, "failures");
+        console.log(`[REQ #${requestId}][${selectedProvider}] rejected | model=${selectedModel} | reason=empty_content | finish=${finishReason}`);
         totalFailures++;
         continue;
       }
+      recordProviderStat(selectedProvider, "successes");
       return { content: content.trim(), model: selectedModel, usage, finishReason };
     } catch (err) {
       lastError = err;
+      recordProviderStat(selectedProvider, "failures");
+      console.log(`[REQ #${requestId}][${selectedProvider}] transport_error | model=${selectedModel} | ${transportErrorSummary(err)}`);
       totalFailures++;
       if (proxyStr && (err.code === 'ECONNRESET' || err.code === 'ETIMEDOUT' || err.name === 'TimeoutError')) {
         const ph = proxyHealth.get(proxyStr) || { failures: 0 };
@@ -2578,8 +2639,9 @@ async function generateGithubPhase1Synthesis(options) {
     deterministic_issues: finalLocalIssues,
     total_requests: totalRequests,
     total_call_failures: totalFailures,
+    provider_stats: cloneProviderStats(),
   });
-  log(`${promptType}: chars=${finalText.length}, requests=${totalRequests}, failures=${totalFailures}`);
+  log(`${promptType}: chars=${finalText.length}, requests=${totalRequests}, failures=${totalFailures}, providers=(${providerStatsSummary()})`);
   return finalText;
 }
 
@@ -2589,5 +2651,6 @@ module.exports = {
   getGithubPhase1Stats: () => ({
     total_requests: totalRequests,
     total_call_failures: totalFailures,
+    provider_stats: cloneProviderStats(),
   }),
 };
