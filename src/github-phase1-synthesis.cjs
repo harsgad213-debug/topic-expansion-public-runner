@@ -196,6 +196,14 @@ function normalizeGeneratedOutput(text) {
     lines.shift();
     while (lines.length && !lines[0].trim()) lines.shift();
   }
+  while (
+    lines.length &&
+    /^\s*(always finish|finish cleanly|return the full|do not wrap|do not use markdown|target about)\b/i.test(
+      lines[lines.length - 1].trim(),
+    )
+  ) {
+    lines.pop();
+  }
   return lines.join("\n").trim();
 }
 
@@ -213,10 +221,18 @@ const STOPWORDS = new Set(
   `.split(/\s+/).filter(Boolean),
 );
 
+const LOW_VALUE_COVERAGE_TERMS = new Set(
+  `
+  may maybe potential good right okay ok well simply must way time number new different option options
+  color colors click clicks relevant take make makes page pages thing things
+  `.split(/\s+/).filter(Boolean),
+);
+
 function normalizeForMatch(text) {
   return String(text || "")
     .toLowerCase()
     .replace(/a\s*\/\s*b/g, "ab")
+    .replace(/\bsign[\s-]+up\b/g, "signup")
     .replace(/[\u2018\u2019]/g, "'")
     .replace(/[\u201c\u201d]/g, '"')
     .replace(/[^a-z0-9+#.]+/g, " ")
@@ -227,6 +243,7 @@ function normalizeForMatch(text) {
 function meaningfulTokens(text) {
   return normalizeForMatch(text)
     .split(/\s+/)
+    .map((token) => token.replace(/^\.+|\.+$/g, ""))
     .filter((token) => {
       if (!token || STOPWORDS.has(token)) return false;
       if (/^\d+$/.test(token)) return false;
@@ -260,6 +277,27 @@ function extractPhrases(text, limit = 80) {
     .filter((item) => item.count >= (item.phrase.split(" ").length === 1 ? 3 : 2))
     .sort((a, b) => b.score - a.score || b.phrase.length - a.phrase.length)
     .slice(0, limit);
+}
+
+function isUsefulCoveragePhrase(phrase) {
+  const normalized = normalizeForMatch(phrase);
+  const tokens = normalized.split(/\s+/).filter(Boolean);
+  if (!tokens.length) return false;
+  if (tokens.length === 1) {
+    const token = tokens[0];
+    if (LOW_VALUE_COVERAGE_TERMS.has(token)) return false;
+    if (token.length < 5 && !["ab", "sql", "api", "apis", "cro"].includes(token)) return false;
+  }
+  return true;
+}
+
+function prioritizeCoveragePhrases(items, limit) {
+  const phrases = items
+    .map((item) => (typeof item === "string" ? item : item?.phrase))
+    .filter(isUsefulCoveragePhrase);
+  const multiWord = phrases.filter((phrase) => normalizeForMatch(phrase).split(/\s+/).length > 1);
+  const singleWord = phrases.filter((phrase) => normalizeForMatch(phrase).split(/\s+/).length === 1);
+  return uniqueLimited([...multiWord, ...singleWord], limit);
 }
 
 function phraseCoverage(phrases, targetText) {
@@ -1584,14 +1622,14 @@ function sampledText(text, maxChars = 70000) {
 
 function transcriptPhrasesForSource(source, limit = 48) {
   if (!source?.text) return [];
-  return extractPhrases(
+  return prioritizeCoveragePhrases(extractPhrases(
     [
       source.title,
       source.filename,
       sampledText(source.text),
     ].join("\n"),
-    limit,
-  ).map((item) => item.phrase);
+    limit * 3,
+  ), limit);
 }
 
 function buildCoveragePlan(pkg, type, sourceSyntheses, rawSnippets, rawSources = []) {
@@ -1613,7 +1651,7 @@ function buildCoveragePlan(pkg, type, sourceSyntheses, rawSnippets, rawSources =
       transcriptPhrases.join(" "),
       rawForSource.join(" "),
     ].join("\n");
-    const requiredPhrases = uniqueLimited(
+    const requiredPhrases = prioritizeCoveragePhrases(
       [
         ...transcriptPhrases,
         ...extractPhrases(phraseText, 48).map((item) => item.phrase),
@@ -1638,7 +1676,7 @@ function buildCoveragePlan(pkg, type, sourceSyntheses, rawSnippets, rawSources =
   const plan = {
     topic: pkg.topic,
     prompt_type: type,
-    global_phrases: uniqueLimited(
+    global_phrases: prioritizeCoveragePhrases(
       perSource.flatMap((source) => source.required_phrases),
       type === "knowledge_map" ? 70 : 80,
     ),
