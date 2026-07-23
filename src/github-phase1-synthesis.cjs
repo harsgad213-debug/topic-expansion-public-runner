@@ -320,6 +320,197 @@ function missingBenchmarkLabels(baseline, output) {
   });
 }
 
+function coveragePlanHaystack(plan) {
+  if (!plan) return "";
+  const parts = [plan.topic, plan.prompt_type, ...(plan.global_phrases || [])];
+  for (const source of plan.sources || []) {
+    parts.push(source.title, source.filename);
+    parts.push(...(source.section_cues || []), ...(source.required_phrases || []));
+  }
+  return parts.filter(Boolean).join("\n");
+}
+
+function learnedArchetypeFor(type, topicName, coveragePlan) {
+  const topic = String(topicName || coveragePlan?.topic || "the topic").trim() || "the topic";
+  const haystack = normalizeForMatch(`${topic}\n${coveragePlanHaystack(coveragePlan)}`);
+  const isAbTesting = haystack.includes("ab testing") || haystack.includes("a b testing");
+  const hasSignup =
+    /\bsignup\b|\bsign up\b|\bregistration\b|\bregistered\b|\bonboarding\b|\bvisitor\b/.test(haystack);
+  const hasStats =
+    /\bstatistic|\bconfidence\b|\bp value\b|\bsample\b|\bhypothesis\b|\bexperiment\b|\btest duration\b/.test(haystack);
+  const hasData =
+    /\bdatabase\b|\bsql\b|\btableau\b|\bdashboard\b|\bmetric\b|\bconversion\b|\banalysis\b|\bdata\b/.test(haystack);
+  const titleTopic = isAbTesting ? "A/B Testing" : topic;
+  const signupSubject = hasSignup ? "Signup" : "User Journey";
+  const projectSubject = hasSignup ? "Signup Optimization" : `${titleTopic} Project`;
+
+  if (type === "full_book") {
+    const labels = [
+      `${titleTopic} Full Book`,
+      `What is ${titleTopic}? (Big Picture)`,
+      `Why ${titleTopic} Matters`,
+      `Understanding ${signupSubject} Funnel`,
+      hasData ? "Database Structure" : "Source Data Structure",
+      "Finding Optimization Opportunity",
+      `Designing ${titleTopic} Test`,
+      hasStats ? "Statistical Thinking" : "Decision Thinking",
+      "Worked Example",
+      "Final Integrated Framework",
+    ];
+    const phrases = [
+      "full book",
+      "big picture",
+      "why companies need testing",
+      "user funnel",
+      "database",
+      "optimization opportunity",
+      "designing ab test",
+      "statistical thinking",
+      "registered users",
+      "signup conversion",
+      "mobile",
+    ];
+    return {
+      labels: uniqueLimited(labels, 14),
+      phrases: uniqueLimited(phrases, 24),
+      lineTarget: 390,
+      guidance:
+        "Write like the ChatGPT UI full-book output: a named full-book walkthrough, big-picture framing, source-backed funnel/data explanation, experiment design, statistics, worked examples, and a final framework.",
+    };
+  }
+
+  if (type === "unit_overview") {
+    const labels = [
+      `${titleTopic} Unit Overview`,
+      `Why ${titleTopic} Exists`,
+      `Mapping the ${projectSubject} Project`,
+      "The Experiment Framework",
+      isAbTesting ? "Control and Treatment" : "Baseline and Change",
+      `Important ${titleTopic} Terms`,
+      hasStats ? "Confidence Level" : "Confidence Check",
+      hasStats ? "P-value" : "Decision Signal",
+      hasStats ? "Sample Size" : "Evidence Size",
+      "Duration of Test",
+      hasSignup ? "Example Based on Signup Optimization" : "Example Based on the Project",
+      `${titleTopic} Full Workflow Map`,
+      "Final Mental Model",
+    ];
+    const phrases = [
+      "unit overview",
+      "signup conversion",
+      "mobile",
+      "name email password",
+      "google",
+      "button",
+      "control",
+      "treatment",
+      "confidence level",
+      "p-value",
+      "sample size",
+      "duration of test",
+      "full workflow map",
+      "final mental model",
+    ];
+    return {
+      labels: uniqueLimited(labels, 16),
+      phrases: uniqueLimited(phrases, 28),
+      lineTarget: 470,
+      guidance:
+        "Write like the ChatGPT UI unit overview: many short lines, standalone definitions, project mapping, experiment terms, a worked project example, a workflow map, and a final mental model.",
+    };
+  }
+
+  const labels = [
+    `${titleTopic} Knowledge Map`,
+    "MASTER MAP OF THE BOOK",
+    "USER JOURNEY MAPPING",
+    "KEY METRICS",
+    hasSignup ? "Signup Success Rate" : "Success Metric",
+    hasSignup ? "THE SIGNUP PROBLEM" : "THE CORE PROBLEM",
+    "ACTIONABLE INSIGHTS",
+    `WHY ${titleTopic.toUpperCase()} IS NEEDED`,
+    `${titleTopic.toUpperCase()} FUNDAMENTALS`,
+    hasStats ? `STATISTICS BEHIND ${titleTopic.toUpperCase()}` : `DECISION LOGIC BEHIND ${titleTopic.toUpperCase()}`,
+    "DEEPER RESULTS",
+    "COMPLETE FRAMEWORK TO REMEMBER",
+  ];
+  const phrases = [
+    "knowledge map",
+    "master map",
+    "user journey mapping",
+    "key metrics",
+    "signup success rate",
+    "problem",
+    "actionable insights",
+    "why ab testing is needed",
+    "ab testing fundamentals",
+    "statistics behind ab testing",
+    "deeper results",
+    "complete framework to remember",
+    "visitors registrations",
+    "email password",
+  ];
+  return {
+    labels: uniqueLimited(labels, 16),
+    phrases: uniqueLimited(phrases, 30),
+    lineTarget: 560,
+    guidance:
+      "Write like the ChatGPT UI knowledge map: a master map, compact uppercase map labels, relationship arrows, metric branches, problem branches, action branches, statistics/decision branches, and a final framework.",
+  };
+}
+
+function renderLearnedArchetype(archetype) {
+  if (!archetype) return "";
+  const lines = [
+    archetype.guidance,
+    `Minimum short-line target: ${archetype.lineTarget} non-empty lines when evidence supports it.`,
+    "Use these section labels or close topic-specific equivalents as plain standalone lines:",
+    ...(archetype.labels || []).map((label) => `- ${label}`),
+    "",
+    "Preserve these learned ChatGPT UI phrase/style cues when supported by transcript evidence:",
+    uniqueLimited(archetype.phrases || [], 30).join(", "),
+  ];
+  return lines.join("\n");
+}
+
+function archetypeIssues(type, output, coveragePlan, targetLength) {
+  const archetype = learnedArchetypeFor(type, coveragePlan?.topic, coveragePlan);
+  const issues = [];
+  const normalized = normalizeForMatch(output);
+  const nonEmptyLines = output.split("\n").map((line) => line.trim()).filter(Boolean);
+  const missingLabels = (archetype.labels || []).filter((label) => {
+    const tokens = meaningfulTokens(label);
+    if (!tokens.length) return false;
+    const matched = tokens.filter((token) => normalized.includes(token)).length;
+    return matched / tokens.length < 0.68;
+  });
+  const cueCoverage = phraseCoverage(
+    (archetype.phrases || [])
+      .map((phrase) => normalizeForMatch(phrase))
+      .filter(Boolean)
+      .map((phrase) => ({ phrase })),
+    output,
+  );
+  const minLines = archetype.lineTarget || Math.round(targetLength / 28);
+
+  if (missingLabels.length > 3) {
+    issues.push(
+      `Missing learned ChatGPT UI section labels: ${missingLabels.slice(0, 10).join(", ")}. Add these as plain standalone labels when supported by the source.`,
+    );
+  }
+  if (cueCoverage.ratio < 0.48) {
+    issues.push(
+      `Learned ChatGPT UI phrase coverage is ${cueCoverage.ratio.toFixed(2)}. Add supported cues: ${cueCoverage.missing.slice(0, 12).join(", ")}.`,
+    );
+  }
+  if (nonEmptyLines.length < minLines) {
+    issues.push(
+      `No-baseline ChatGPT UI line shape is too compressed (${nonEmptyLines.length}/${minLines} lines). Split into short standalone teaching lines and map labels.`,
+    );
+  }
+  return issues;
+}
+
 function localParityIssues(type, output, baseline) {
   if (!baseline) return [];
   const issues = [];
@@ -403,7 +594,12 @@ function genericQualityIssues(type, output, targetLength) {
   const nonEmptyLines = output.split("\n").map((line) => line.trim()).filter(Boolean);
   const minChars = Math.round(targetLength * 0.82);
   const maxChars = Math.round(targetLength * 1.35);
-  const minLines = Math.round(targetLength / 32);
+  const minLinesByType = {
+    full_book: Math.round(targetLength / 24),
+    unit_overview: Math.round(targetLength / 22),
+    knowledge_map: Math.round(targetLength / 18),
+  };
+  const minLines = minLinesByType[type] || Math.round(targetLength / 28);
   const minExamples = type === "knowledge_map" ? 5 : 8;
   const exampleCount = (output.match(/\bexample\b/gi) || []).length;
   const codeFences = (output.match(/^```/gm) || []).length;
@@ -483,7 +679,7 @@ function coveragePlanIssues(type, output, coveragePlan) {
 function deterministicQualityIssues(type, output, baseline, targetLength, coveragePlan) {
   const shapeIssues = baseline
     ? localParityIssues(type, output, baseline)
-    : genericQualityIssues(type, output, targetLength);
+    : [...genericQualityIssues(type, output, targetLength), ...archetypeIssues(type, output, coveragePlan, targetLength)];
   return [...shapeIssues, ...coveragePlanIssues(type, output, coveragePlan)];
 }
 
@@ -1339,7 +1535,7 @@ function buildCoveragePlan(pkg, type, sourceSyntheses, rawSnippets) {
       required_phrases: requiredPhrases,
     };
   });
-  return {
+  const plan = {
     topic: pkg.topic,
     prompt_type: type,
     global_phrases: uniqueLimited(
@@ -1348,6 +1544,8 @@ function buildCoveragePlan(pkg, type, sourceSyntheses, rawSnippets) {
     ),
     sources: perSource,
   };
+  plan.learned_archetype = learnedArchetypeFor(type, pkg.topic, plan);
+  return plan;
 }
 
 function renderCoveragePlan(plan, options = {}) {
@@ -1518,6 +1716,7 @@ function buildFinalPrompt(pkg, type, sourceSyntheses, targetLength, rawSnippets,
   const rawSnippetLimit = manySources ? 4 : 5;
   const sourceSynthesisLimit = manySources ? 650 : 1200;
   const baselineLines = baseline ? baseline.split("\n").length : 0;
+  const learnedArchetypeText = baseline ? "" : renderLearnedArchetype(coveragePlan?.learned_archetype);
   const coveragePlanText = renderCoveragePlan(coveragePlan, {
     sourceLimit: manySources ? 5 : 8,
     phraseLimit: manySources ? 12 : 18,
@@ -1567,6 +1766,13 @@ Target quality:
 - Do not use Mermaid diagrams or Markdown code fences. Use plain text maps, lists, and sections.
 - For knowledge_map, preserve PART-style map sections, major benchmark map labels, and plain text relationship arrows where supported by the evidence.
 - Finish the response cleanly; do not leave any section truncated.
+
+${learnedArchetypeText ? `Learned no-baseline ChatGPT UI archetype:
+Use this as the permanent style/shape target when no benchmark file is available.
+<learned_archetype>
+${learnedArchetypeText}
+</learned_archetype>
+` : ""}
 
 Source manifest:
 ${manifestMarkdown(pkg).slice(0, manifestLimit)}
@@ -1738,9 +1944,11 @@ async function patchOutput(keys, models, pkg, type, output, audit, sourceSynthes
   const phraseCues = baselinePhraseCues(baseline, 70);
   const benchmarkMode = benchmarkModeInstruction(type, baseline);
   const baselineLines = baseline ? baseline.split("\n").length : 0;
+  const learnedArchetype = coveragePlan?.learned_archetype;
   const targetMinLines = baseline
     ? Math.round(baselineLines * 0.55)
-    : Math.round(targetLength / 32);
+    : (learnedArchetype?.lineTarget || Math.round(targetLength / 28));
+  const learnedArchetypeText = baseline ? "" : renderLearnedArchetype(learnedArchetype);
   const coveragePlanText = renderCoveragePlan(coveragePlan, {
     sourceLimit: 7,
     phraseLimit: 14,
@@ -1788,6 +1996,13 @@ Benchmark calibration:
 - If the current output ends abruptly, preserve the existing useful content but complete the final section with a short closing summary.
 - Always finish with a complete final sentence. Do not stop after a dangling label, formula, arrow, or partial clause.
 
+${learnedArchetypeText ? `Learned no-baseline ChatGPT UI archetype:
+Use these labels and phrase cues to repair the missing ChatGPT UI-style shape.
+<learned_archetype>
+${learnedArchetypeText}
+</learned_archetype>
+` : ""}
+
 High-priority raw transcript evidence snippets:
 ${renderRawSnippetsLimited(rawSnippets, 5)}
 
@@ -1820,9 +2035,10 @@ async function expandShortOutput(keys, models, pkg, type, output, audit, rawSnip
   const phraseCues = baselinePhraseCues(baseline, 70);
   const benchmarkMode = benchmarkModeInstruction(type, baseline);
   const baselineLines = baseline ? baseline.split("\n").length : 0;
+  const learnedArchetype = coveragePlan?.learned_archetype;
   const targetMinLines = baseline
     ? Math.round(baselineLines * 0.55)
-    : Math.round(targetLength / 32);
+    : (learnedArchetype?.lineTarget || Math.round(targetLength / 28));
   const tooLong = output.length > targetLength * 1.35;
   const targetMinChars = tooLong
     ? Math.round(targetLength * 0.85)
@@ -1843,6 +2059,7 @@ async function expandShortOutput(keys, models, pkg, type, output, audit, rawSnip
     globalLimit: 32,
     maxChars: 5200,
   });
+  const learnedArchetypeText = baseline ? "" : renderLearnedArchetype(learnedArchetype);
   const result = await callGitHub(
     keys,
     models,
@@ -1878,6 +2095,13 @@ ${profile.mustCover}
 Benchmark calibration:
 - ${benchmarkCalibrationFor(type, baseline)}
 - ${benchmarkMode || "The benchmark is a completed output; preserve that completed-output response mode."}
+
+${learnedArchetypeText ? `Learned no-baseline ChatGPT UI archetype:
+Use these labels and phrase cues to align the output with the learned standard.
+<learned_archetype>
+${learnedArchetypeText}
+</learned_archetype>
+` : ""}
 
 Specific expansion focus:
 ${JSON.stringify(audit.missing_items || [], null, 2)}
