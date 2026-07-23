@@ -59,6 +59,10 @@ on:
         description: "Comma-separated GitHub Models list for Phase 1 synthesis"
         required: true
         default: "openai/gpt-4o-mini,openai/gpt-4.1-mini,mistral-ai/codestral-2501,meta/llama-3.3-70b-instruct,mistral-ai/mistral-medium-2505,openai/gpt-4o,openai/gpt-4.1,deepseek/deepseek-v3-0324,deepseek/deepseek-r1-0528,deepseek/deepseek-r1,meta/llama-4-maverick-17b-128e-instruct-fp8,microsoft/phi-4"
+      phase1_final_models:
+        description: "Optional comma-separated model allowlist for final synthesis, audit, patch, and alignment calls. Leave empty to use all loaded buckets."
+        required: false
+        default: ""
       groq_phase1_models:
         description: "Comma-separated Groq models list for Phase 1 synthesis (leave empty to use defaults)"
         required: false
@@ -125,6 +129,7 @@ jobs:
       TOPIC_SHARD_INDEX: ${{ matrix.shard_index }}
       GITHUB_PHASE1_SUMMARY_CONCURRENCY: ${{ inputs.summary_concurrency }}
       GITHUB_PHASE1_MODELS: ${{ inputs.github_phase1_models }}
+      PHASE1_FINAL_MODELS: ${{ inputs.phase1_final_models }}
       GITHUB_PHASE1_ATTEMPTS: ${{ inputs.github_phase1_attempts }}
       GITHUB_PHASE1_TIMEOUT_MS: ${{ inputs.github_phase1_timeout_ms }}
       GITHUB_PHASE1_KEY_OFFSET: ${{ matrix.shard_index }}

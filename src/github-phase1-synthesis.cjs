@@ -450,6 +450,43 @@ function genericQualityIssues(type, output, targetLength) {
   return issues;
 }
 
+function coveragePlanIssues(type, output, coveragePlan) {
+  if (!coveragePlan || !Array.isArray(coveragePlan.sources) || !coveragePlan.sources.length) return [];
+  const issues = [];
+  const globalPhrases = (coveragePlan.global_phrases || [])
+    .filter((phrase) => meaningfulTokens(phrase).length >= 1)
+    .map((phrase) => ({ phrase }));
+  const globalCoverage = phraseCoverage(globalPhrases.slice(0, 60), output);
+  const globalFloor = type === "knowledge_map" ? 0.42 : 0.46;
+  if (globalPhrases.length >= 12 && globalCoverage.ratio < globalFloor) {
+    issues.push(
+      `Source-derived concept coverage is ${globalCoverage.ratio.toFixed(2)}. Add these source-backed concepts: ${globalCoverage.missing.slice(0, 12).join(", ")}.`,
+    );
+  }
+
+  for (const source of coveragePlan.sources) {
+    const sourcePhrases = (source.required_phrases || [])
+      .filter((phrase) => meaningfulTokens(phrase).length >= 1)
+      .map((phrase) => ({ phrase }));
+    if (sourcePhrases.length < 8) continue;
+    const coverage = phraseCoverage(sourcePhrases.slice(0, 32), output);
+    const floor = coveragePlan.sources.length > 3 ? 0.3 : 0.36;
+    if (coverage.ratio < floor) {
+      issues.push(
+        `Coverage for source "${source.title}" is weak (${coverage.ratio.toFixed(2)}). Add these concepts where relevant: ${coverage.missing.slice(0, 8).join(", ")}.`,
+      );
+    }
+  }
+  return issues.slice(0, 5);
+}
+
+function deterministicQualityIssues(type, output, baseline, targetLength, coveragePlan) {
+  const shapeIssues = baseline
+    ? localParityIssues(type, output, baseline)
+    : genericQualityIssues(type, output, targetLength);
+  return [...shapeIssues, ...coveragePlanIssues(type, output, coveragePlan)];
+}
+
 function extractJson(text) {
   const trimmed = String(text || "").trim();
   const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
@@ -473,6 +510,17 @@ function normalizeModels(githubModels) {
   );
   if (preferred.length) return preferred;
   return available.length ? available.slice(0, 2) : ["openai/gpt-4.1", "openai/gpt-4o"];
+}
+
+function splitModelList(value) {
+  return String(value || "")
+    .split(/[\n,;]+/)
+    .map((model) => model.trim())
+    .filter(Boolean);
+}
+
+function finalModelAllowlist() {
+  return splitModelList(process.env.PHASE1_FINAL_MODELS || process.env.GITHUB_PHASE1_FINAL_MODELS || "");
 }
 
 function discoverTranscriptFiles(transcriptsDir, files) {
@@ -846,9 +894,18 @@ async function callGitHub(keys, models, messages, options = {}) {
   const temperature = options.temperature ?? 0.2;
   const inputChars = messages.reduce((sum, message) => sum + String(message.content || "").length, 0);
   const estimatedTokens = Math.ceil(inputChars / 4) + maxTokens;
+  const modelAllowlist = splitModelList(options.modelAllowlist).map((model) => model.toLowerCase());
+  const scopedBuckets = modelAllowlist.length
+    ? ALL_BUCKETS.filter((bucket) => modelAllowlist.includes(String(bucket.model).toLowerCase()))
+    : ALL_BUCKETS;
+  const candidateBuckets = scopedBuckets.length ? scopedBuckets : ALL_BUCKETS;
   
-  const usableBuckets = ALL_BUCKETS.filter(b => estimatedTokens < (MODEL_LIMITS.get(b.model) || 8000));
-  const bucketsToUse = usableBuckets.length > 0 ? usableBuckets : ALL_BUCKETS;
+  if (modelAllowlist.length && !scopedBuckets.length) {
+    console.warn(`[Init] No buckets matched model allowlist (${modelAllowlist.join(", ")}); falling back to all buckets.`);
+  }
+
+  const usableBuckets = candidateBuckets.filter(b => estimatedTokens < (MODEL_LIMITS.get(b.model) || 8000));
+  const bucketsToUse = usableBuckets.length > 0 ? usableBuckets : candidateBuckets;
 
   const attempts = bucketsToUse.length;
   let lastError = null;
@@ -1215,6 +1272,112 @@ function renderRawSnippetsLimited(rawSnippets, limit = 5) {
   return renderRawSnippets(rawSnippets.slice(0, limit));
 }
 
+function uniqueLimited(items, limit) {
+  const seen = new Set();
+  const out = [];
+  for (const item of items) {
+    const value = String(item || "").trim();
+    const key = normalizeForMatch(value);
+    if (!value || !key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(value);
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
+function sourceCueLines(text, limit = 12) {
+  return uniqueLimited(
+    String(text || "")
+      .replace(/\r\n/g, "\n")
+      .split("\n")
+      .map((line) =>
+        line
+          .replace(/^[-*]\s+/, "")
+          .replace(/^\d+[\.)]\s+/, "")
+          .replace(/\*\*/g, "")
+          .trim(),
+      )
+      .filter((line) => {
+        if (!line || line.length > 95) return false;
+        const tokenCount = meaningfulTokens(line).length;
+        if (tokenCount < 2) return false;
+        return /[:?]$/.test(line) ||
+          /^[A-Z][A-Za-z0-9 /&+().'-]{8,}$/.test(line) ||
+          /\b(project|example|analysis|testing|hypothesis|conversion|dashboard|statistical|optimization|workflow|formula|metric|model|decision|mistake)\b/i.test(line);
+      }),
+    limit,
+  );
+}
+
+function buildCoveragePlan(pkg, type, sourceSyntheses, rawSnippets) {
+  const perSource = sourceSyntheses.map((source) => {
+    const rawForSource = rawSnippets
+      .filter((snippet) => snippet.source_id === source.source_id)
+      .flatMap((snippet) => [
+        ...snippet.matched_terms,
+        ...extractPhrases(snippet.snippet, 12).map((item) => item.phrase),
+      ]);
+    const phraseText = [
+      source.title,
+      source.filename,
+      source.synthesis,
+      rawForSource.join(" "),
+    ].join("\n");
+    const requiredPhrases = uniqueLimited(
+      [
+        ...extractPhrases(phraseText, 48).map((item) => item.phrase),
+        ...rawForSource,
+      ],
+      type === "knowledge_map" ? 24 : 30,
+    );
+    return {
+      source_id: source.source_id,
+      title: source.title,
+      filename: source.filename,
+      section_cues: sourceCueLines(source.synthesis, 12),
+      required_phrases: requiredPhrases,
+    };
+  });
+  return {
+    topic: pkg.topic,
+    prompt_type: type,
+    global_phrases: uniqueLimited(
+      perSource.flatMap((source) => source.required_phrases),
+      type === "knowledge_map" ? 45 : 55,
+    ),
+    sources: perSource,
+  };
+}
+
+function renderCoveragePlan(plan, options = {}) {
+  if (!plan || !Array.isArray(plan.sources) || !plan.sources.length) {
+    return "No source-derived coverage plan available.";
+  }
+  const sourceLimit = options.sourceLimit || 6;
+  const phraseLimit = options.phraseLimit || 18;
+  const sectionLimit = options.sectionLimit || 8;
+  const lines = [
+    `Topic: ${plan.topic}`,
+    `Prompt type: ${plan.prompt_type}`,
+    "Global required concepts:",
+    uniqueLimited(plan.global_phrases || [], options.globalLimit || 35).join(", "),
+    "",
+    "Per-source required coverage:",
+  ];
+  for (const source of plan.sources.slice(0, sourceLimit)) {
+    lines.push(`- ${source.source_id}: ${source.title}`);
+    lines.push(`  file: ${source.filename}`);
+    if (source.section_cues?.length) {
+      lines.push(`  section cues: ${source.section_cues.slice(0, sectionLimit).join(" | ")}`);
+    }
+    if (source.required_phrases?.length) {
+      lines.push(`  concepts: ${source.required_phrases.slice(0, phraseLimit).join(", ")}`);
+    }
+  }
+  return lines.join("\n").slice(0, options.maxChars || 6200);
+}
+
 function baselineFileFor(topicName, type, baselineDir) {
   if (!baselineDir || !fs.existsSync(baselineDir)) return null;
   const suffix = `_${type}.md`;
@@ -1339,7 +1502,7 @@ function benchmarkCalibrationFor(type, baseline) {
   return lines.join("\n- ");
 }
 
-function buildFinalPrompt(pkg, type, sourceSyntheses, targetLength, rawSnippets, baseline) {
+function buildFinalPrompt(pkg, type, sourceSyntheses, targetLength, rawSnippets, baseline, coveragePlan) {
   if (isIntakeBenchmark(baseline)) {
     return buildIntakeBenchmarkPrompt(pkg.topic, type, baseline);
   }
@@ -1355,6 +1518,13 @@ function buildFinalPrompt(pkg, type, sourceSyntheses, targetLength, rawSnippets,
   const rawSnippetLimit = manySources ? 4 : 5;
   const sourceSynthesisLimit = manySources ? 650 : 1200;
   const baselineLines = baseline ? baseline.split("\n").length : 0;
+  const coveragePlanText = renderCoveragePlan(coveragePlan, {
+    sourceLimit: manySources ? 5 : 8,
+    phraseLimit: manySources ? 12 : 18,
+    sectionLimit: manySources ? 5 : 8,
+    globalLimit: manySources ? 24 : 40,
+    maxChars: manySources ? 4200 : 6800,
+  });
   return [
     {
       role: "system",
@@ -1400,6 +1570,12 @@ Target quality:
 
 Source manifest:
 ${manifestMarkdown(pkg).slice(0, manifestLimit)}
+
+Source-derived coverage plan:
+Use this as the required source outline before writing. Every source must be visibly represented unless it is genuinely thin or irrelevant.
+<coverage_plan>
+${coveragePlanText}
+</coverage_plan>
 
 High-priority raw transcript evidence snippets:
 ${renderRawSnippetsLimited(rawSnippets, rawSnippetLimit)}
@@ -1524,7 +1700,7 @@ Return strict JSON with:
 Return only the JSON object.`,
       },
     ],
-    { maxTokens: 1000, temperature: 0 },
+    { maxTokens: 1000, temperature: 0, modelAllowlist: finalModelAllowlist() },
   );
 
   const jsonText = extractJson(result.content);
@@ -1553,7 +1729,7 @@ Return only the JSON object.`,
   }
 }
 
-async function patchOutput(keys, models, pkg, type, output, audit, sourceSyntheses, rawSnippets, baseline, targetLength) {
+async function patchOutput(keys, models, pkg, type, output, audit, sourceSyntheses, rawSnippets, baseline, targetLength, coveragePlan) {
   if (!audit.required_patch && (!audit.missing_items || audit.missing_items.length === 0)) {
     return output;
   }
@@ -1565,6 +1741,13 @@ async function patchOutput(keys, models, pkg, type, output, audit, sourceSynthes
   const targetMinLines = baseline
     ? Math.round(baselineLines * 0.55)
     : Math.round(targetLength / 32);
+  const coveragePlanText = renderCoveragePlan(coveragePlan, {
+    sourceLimit: 7,
+    phraseLimit: 14,
+    sectionLimit: 6,
+    globalLimit: 32,
+    maxChars: 5200,
+  });
   const maxTokens = isIntakeBenchmark(baseline)
     ? Math.max(900, Math.min(1400, Math.ceil((targetLength * 0.9) / 4) + 220))
     : Math.max(1800, Math.min(4600, Math.ceil((targetLength * 1.18) / 4) + 500));
@@ -1586,6 +1769,12 @@ ${JSON.stringify(audit, null, 2).slice(0, 1800)}
 
 Source manifest:
 ${manifestMarkdown(pkg).slice(0, 1800)}
+
+Source-derived coverage plan:
+Use this to restore missed source-backed concepts and source sections.
+<coverage_plan>
+${coveragePlanText}
+</coverage_plan>
 
 Required coverage:
 ${profile.mustCover}
@@ -1620,12 +1809,12 @@ Return the full improved output. Target about ${Math.round(targetLength * 0.95)}
         )} characters if evidence supports it. Preserve complete coverage across all sources. Add concrete transcript-specific and clearly illustrative examples instead of generic filler. Match the ChatGPT UI line-by-line teaching shape. For knowledge_map, preserve PART-style map sections and relationship arrows where supported. Do not use Markdown # headings or code fences. Finish cleanly with no truncated section.`,
       },
     ],
-    { maxTokens, temperature: 0.15, timeoutMs: 240000 },
+    { maxTokens, temperature: 0.15, timeoutMs: 240000, modelAllowlist: finalModelAllowlist() },
   );
   return normalizeGeneratedOutput(result.content);
 }
 
-async function expandShortOutput(keys, models, pkg, type, output, audit, rawSnippets, baseline, targetLength) {
+async function expandShortOutput(keys, models, pkg, type, output, audit, rawSnippets, baseline, targetLength, coveragePlan) {
   const profile = profileFor(type);
   const outlineCues = baselineOutlineCues(baseline).slice(0, 2500);
   const phraseCues = baselinePhraseCues(baseline, 70);
@@ -1647,6 +1836,13 @@ async function expandShortOutput(keys, models, pkg, type, output, audit, rawSnip
     : shortKnowledgeMap
       ? Math.max(1100, Math.min(1700, Math.ceil((targetLength * 0.95) / 4) + 260))
       : Math.max(1800, Math.min(4600, Math.ceil((targetLength * 1.2) / 4) + 550));
+  const coveragePlanText = renderCoveragePlan(coveragePlan, {
+    sourceLimit: 7,
+    phraseLimit: 14,
+    sectionLimit: 6,
+    globalLimit: 32,
+    maxChars: 5200,
+  });
   const result = await callGitHub(
     keys,
     models,
@@ -1686,6 +1882,12 @@ Benchmark calibration:
 Specific expansion focus:
 ${JSON.stringify(audit.missing_items || [], null, 2)}
 
+Source-derived coverage plan:
+Use this to repair missed source-backed concepts without adding unsupported filler.
+<coverage_plan>
+${coveragePlanText}
+</coverage_plan>
+
 High-priority raw transcript evidence snippets:
 ${renderRawSnippetsLimited(rawSnippets, 4)}
 
@@ -1700,7 +1902,7 @@ ${output.slice(0, tooLong ? 5200 : 7000)}
 Return the full ${tooLong ? "condensed" : "expanded"} output now.`,
       },
     ],
-    { maxTokens, temperature: 0.12, timeoutMs: 240000 },
+    { maxTokens, temperature: 0.12, timeoutMs: 240000, modelAllowlist: finalModelAllowlist() },
   );
   return { text: normalizeGeneratedOutput(result.content), finishedNaturally: result.finishReason === 'stop' };
 }
@@ -1772,6 +1974,8 @@ async function generateGithubPhase1Synthesis(options) {
 
   const rawSnippets = selectRawEvidenceSnippets(sources, topicName, promptType);
   writeJson(path.join(cacheDir, `${promptType}_raw_evidence_snippets.json`), rawSnippets);
+  const coveragePlan = buildCoveragePlan(pkg, promptType, sourceSyntheses, rawSnippets);
+  writeJson(path.join(cacheDir, `${promptType}_coverage_plan.json`), coveragePlan);
 
   const baselinePath = baselineFileFor(topicName, promptType, baselineDir);
   const baseline = baselinePath ? readText(baselinePath) : "";
@@ -1784,7 +1988,7 @@ async function generateGithubPhase1Synthesis(options) {
       : `No ChatGPT UI benchmark found for ${promptType}; using generic target (${targetLength} chars)`,
   );
 
-  const finalPrompt = buildFinalPrompt(pkg, promptType, sourceSyntheses, targetLength, rawSnippets, baseline);
+  const finalPrompt = buildFinalPrompt(pkg, promptType, sourceSyntheses, targetLength, rawSnippets, baseline, coveragePlan);
   const finalMaxTokens = isIntakeBenchmark(baseline)
     ? Math.max(900, Math.min(1400, Math.ceil((targetLength * 0.9) / 4) + 220))
     : Math.max(1800, Math.min(5200, Math.ceil((targetLength * 1.25) / 4) + 550));
@@ -1792,6 +1996,7 @@ async function generateGithubPhase1Synthesis(options) {
     maxTokens: finalMaxTokens,
     temperature: 0.18,
     timeoutMs: 240000,
+    modelAllowlist: finalModelAllowlist(),
   });
   const draftText = normalizeGeneratedOutput(draft.content);
   const draftPath = path.join(cacheDir, `${safeSegment(topicName)}_${promptType}_draft.md`);
@@ -1808,9 +2013,7 @@ async function generateGithubPhase1Synthesis(options) {
     sourceSyntheses,
   );
   const draftMetrics = deterministicMetrics(draftText, baseline.length);
-  const draftLocalIssues = baseline.length
-    ? localParityIssues(promptType, draftText, baseline)
-    : genericQualityIssues(promptType, draftText, targetLength);
+  const draftLocalIssues = deterministicQualityIssues(promptType, draftText, baseline, targetLength, coveragePlan);
   let finalText = draftText;
   let finalAudit = draftAudit;
 
@@ -1846,6 +2049,7 @@ async function generateGithubPhase1Synthesis(options) {
       rawSnippets,
       baseline,
       targetLength,
+      coveragePlan,
     );
     finalAudit = await auditOutput(
       githubKeys,
@@ -1859,9 +2063,7 @@ async function generateGithubPhase1Synthesis(options) {
   }
 
   let finalMetrics = deterministicMetrics(finalText, baseline.length);
-  let finalLocalIssues = baseline.length
-    ? localParityIssues(promptType, finalText, baseline)
-    : genericQualityIssues(promptType, finalText, targetLength);
+  let finalLocalIssues = deterministicQualityIssues(promptType, finalText, baseline, targetLength, coveragePlan);
   let alignmentPasses = 0;
   while (alignmentPasses < 2) {
     const tooShort = baseline.length
@@ -1896,6 +2098,7 @@ async function generateGithubPhase1Synthesis(options) {
       rawSnippets,
       baseline,
       targetLength,
+      coveragePlan,
     );
     if (!expandResult.finishedNaturally) {
       log(`Expand hit output limit â€” keeping pre-expand text (${preExpandText.length} chars)`);
@@ -1919,9 +2122,7 @@ async function generateGithubPhase1Synthesis(options) {
       sourceSyntheses,
     );
     finalMetrics = deterministicMetrics(finalText, baseline.length);
-    finalLocalIssues = baseline.length
-      ? localParityIssues(promptType, finalText, baseline)
-      : genericQualityIssues(promptType, finalText, targetLength);
+    finalLocalIssues = deterministicQualityIssues(promptType, finalText, baseline, targetLength, coveragePlan);
   }
 
   const finalPath = path.join(cacheDir, `${safeSegment(topicName)}_${promptType}_github_phase1.md`);
@@ -1937,6 +2138,7 @@ async function generateGithubPhase1Synthesis(options) {
     final_chars: finalText.length,
     metrics: finalMetrics,
     audit: finalAudit,
+    coverage_plan_path: path.join(cacheDir, `${promptType}_coverage_plan.json`),
     patched: needsPatch,
     deterministic_issues: finalLocalIssues,
     total_requests: totalRequests,
