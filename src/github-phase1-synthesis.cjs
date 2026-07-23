@@ -90,8 +90,9 @@ function initBuckets(keys, models) {
 
   const groqOnly = process.env.GROQ_ONLY === 'true';
   const mistralOnly = process.env.MISTRAL_ONLY === 'true';
+  const githubOnly = process.env.GITHUB_ONLY === 'true';
 
-  // --- GitHub buckets ---
+  // --- GitHub buckets (skip when groq_only or mistral_only) ---
   if (!groqOnly && !mistralOnly) {
     for (const k of keys) {
       if (proxyList.length > 0) {
@@ -112,7 +113,7 @@ function initBuckets(keys, models) {
   const groqKeys = groqKeysRaw.split(/[\n,;]+/).map(k => k.trim()).filter(k => k.startsWith('gsk_'));
   const groqModelsRaw = process.env.GROQ_PHASE1_MODELS || GROQ_MODELS_DEFAULT.join(',');
   const groqModels = groqModelsRaw.split(',').map(m => m.trim()).filter(Boolean);
-  if (!mistralOnly && groqKeys.length > 0) {
+  if (!mistralOnly && !githubOnly && groqKeys.length > 0) {
     for (const k of groqKeys) {
       if (proxyList.length > 0) {
         const pIdx = Math.abs(k.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0)) % proxyList.length;
@@ -131,7 +132,7 @@ function initBuckets(keys, models) {
   const mistralKeys = mistralKeysRaw.split(/[\n,;]+/).map(k => k.trim()).filter(Boolean);
   const mistralModelsRaw = process.env.MISTRAL_PHASE1_MODELS || '';
   const mistralModels = mistralModelsRaw.split(',').map(m => m.trim()).filter(Boolean);
-  if (!groqOnly && mistralKeys.length > 0) {
+  if (!groqOnly && !githubOnly && mistralKeys.length > 0) {
     for (const k of mistralKeys) {
       if (proxyList.length > 0) {
         const pIdx = Math.abs(k.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0)) % proxyList.length;
