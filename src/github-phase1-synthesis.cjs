@@ -2,7 +2,7 @@ const fs = require("fs");
 const path = require("path");
 const { fetch, ProxyAgent } = require("undici");
 
-const GITHUB_ENDPOINT = "https://models.inference.ai.azure.com/chat/completions";
+const GITHUB_ENDPOINT = "https://models.github.ai/inference/chat/completions";
 const GROQ_ENDPOINT   = "https://api.groq.com/openai/v1/chat/completions";
 const MISTRAL_ENDPOINT = "https://api.mistral.ai/v1/chat/completions";
 
