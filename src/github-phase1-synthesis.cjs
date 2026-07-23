@@ -124,7 +124,7 @@ function initBuckets(keys, models) {
         ALL_BUCKETS.push({ provider: 'groq', key: k, model: m, id: `groq:${k}:${m}` });
       }
     }
-    console.log(`[Init] Loaded ${groqKeys.length} Groq keys × ${groqModels.length} models = ${groqKeys.length * groqModels.length} Groq buckets.`);
+    console.log(`[Init] Loaded ${groqKeys.length} Groq keys Ã— ${groqModels.length} models = ${groqKeys.length * groqModels.length} Groq buckets.`);
   }
 
   // --- Mistral buckets (skip when groq_only) ---
@@ -143,7 +143,7 @@ function initBuckets(keys, models) {
         ALL_BUCKETS.push({ provider: 'mistral', key: k, model: m, id: `mistral:${k}:${m}` });
       }
     }
-    console.log(`[Init] Loaded ${mistralKeys.length} Mistral keys × ${mistralModels.length} models = ${mistralKeys.length * mistralModels.length} Mistral buckets.`);
+    console.log(`[Init] Loaded ${mistralKeys.length} Mistral keys Ã— ${mistralModels.length} models = ${mistralKeys.length * mistralModels.length} Mistral buckets.`);
   }
 
   // Fisher-Yates shuffle ALL_BUCKETS
@@ -387,6 +387,58 @@ function localParityIssues(type, output, baseline) {
   if (type === "knowledge_map" && arrowRatio < 0.7) {
     issues.push(
       `Knowledge map has too few relationship arrows (${outputArrows}/${baselineArrows}). Restore visual relationship flow using plain text arrows.`,
+    );
+  }
+  if (codeFences > 0) {
+    issues.push("Remove Markdown code fences. Plain text maps must not be fenced.");
+  }
+  if (headingMarks > 0) {
+    issues.push("Remove Markdown # headings. Use plain standalone section labels like the ChatGPT UI output.");
+  }
+  return issues;
+}
+
+function genericQualityIssues(type, output, targetLength) {
+  const issues = [];
+  const nonEmptyLines = output.split("\n").map((line) => line.trim()).filter(Boolean);
+  const minChars = Math.round(targetLength * 0.82);
+  const maxChars = Math.round(targetLength * 1.35);
+  const minLines = Math.round(targetLength / 32);
+  const minExamples = type === "knowledge_map" ? 5 : 8;
+  const exampleCount = (output.match(/\bexample\b/gi) || []).length;
+  const codeFences = (output.match(/^```/gm) || []).length;
+  const headingMarks = (output.match(/^#{1,4}\s+/gm) || []).length;
+  const ending = endingQuality(output);
+
+  if (output.length < minChars) {
+    issues.push(
+      `Output is below the learned ChatGPT UI depth floor (${output.length}/${minChars} chars). Expand with source-backed sections and examples.`,
+    );
+  }
+  if (output.length > maxChars) {
+    issues.push(
+      `Output exceeds the learned ChatGPT UI length ceiling (${output.length}/${maxChars} chars). Condense repeated material without losing source coverage.`,
+    );
+  }
+  if (nonEmptyLines.length < minLines) {
+    issues.push(
+      `Line density is too compressed (${nonEmptyLines.length}/${minLines} lines). Use many short teaching lines, standalone labels, separated formulas, and compact example blocks.`,
+    );
+  }
+  if (exampleCount < minExamples) {
+    issues.push(
+      `Example count is too low (${exampleCount}/${minExamples}). Add concrete worked examples and mini-scenarios from the evidence.`,
+    );
+  }
+  if (type === "knowledge_map") {
+    const arrows = (output.match(/->|\u2192/g) || []).length;
+    if (arrows < 20) {
+      issues.push(`Knowledge map has too few relationship arrows (${arrows}/20). Add source-backed relationship flow.`);
+    }
+  }
+  if (ending.suspicious) {
+    issues.push(
+      `Output appears to end abruptly. Last line: "${ending.last_line}". Finish with a complete closing sentence or final summary.`,
     );
   }
   if (codeFences > 0) {
@@ -832,7 +884,7 @@ async function callGitHub(keys, models, messages, options = {}) {
     if (!selectedBucket) {
       waitLoops++;
       if (waitLoops > 120) {
-        throw lastError || new Error("All buckets permanently exhausted or cooling — giving up.");
+        throw lastError || new Error("All buckets permanently exhausted or cooling â€” giving up.");
       }
       await new Promise(r => setTimeout(r, 500));
       attempt--; 
@@ -900,7 +952,7 @@ async function callGitHub(keys, models, messages, options = {}) {
       if (!res.ok) {
         const errMsg = `[${selectedProvider}] HTTP ${res.status}: ${JSON.stringify(data).slice(0, 400)}`;
         lastError = new Error(errMsg);
-        console.log(`[REQ #${totalRequests}][${selectedProvider}] ❌ key=...${selectedKey.slice(-4)} | ${errMsg}`);
+        console.log(`[REQ #${totalRequests}][${selectedProvider}] âŒ key=...${selectedKey.slice(-4)} | ${errMsg}`);
         totalFailures++;
 
         if (res.status === 429) {
@@ -916,10 +968,10 @@ async function callGitHub(keys, models, messages, options = {}) {
             coolingBucket.set(selectedBucket, Date.now() + cooldownMs);
           }
         } else if (res.status === 400 && (data?.error?.code === 'organization_restricted' || data?.error?.code === 'invalid_api_key')) {
-          // Permanently dead key — mark as exhausted so we never retry it
+          // Permanently dead key â€” mark as exhausted so we never retry it
           tpdExhausted.set(selectedBucket, true);
         } else if (res.status === 401) {
-          // Invalid key — permanently exhaust
+          // Invalid key â€” permanently exhaust
           tpdExhausted.set(selectedBucket, true);
         } else if (res.status >= 500 && selectedProvider === 'github') {
           const proxyStr2 = keyProxyMap.get(selectedKey);
@@ -941,16 +993,16 @@ async function callGitHub(keys, models, messages, options = {}) {
       if (content.includes('<think>')) {
         // If properly closed, strip the block
         content = content.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
-        // If still starts with <think> (unclosed — model was cut off mid-reasoning), discard
+        // If still starts with <think> (unclosed â€” model was cut off mid-reasoning), discard
         if (content.startsWith('<think>') || content.trim() === '') {
-          lastError = new Error('Model returned unclosed <think> block — output discarded.');
+          lastError = new Error('Model returned unclosed <think> block â€” output discarded.');
           totalFailures++;
           continue;
         }
       }
       const finishReason = data?.choices?.[0]?.finish_reason || 'unknown';
       const usage = data.usage || {};
-      console.log(`[REQ #${totalRequests}][${selectedProvider}] ✅ model=${selectedModel} | finish=${finishReason} | in=${usage.prompt_tokens || '?'} out=${usage.completion_tokens || '?'} | chars=${content.length}`);
+      console.log(`[REQ #${totalRequests}][${selectedProvider}] âœ… model=${selectedModel} | finish=${finishReason} | in=${usage.prompt_tokens || '?'} out=${usage.completion_tokens || '?'} | chars=${content.length}`);
       if (!content.trim()) {
         lastError = new Error("Models returned empty content.");
         totalFailures++;
@@ -1510,7 +1562,9 @@ async function patchOutput(keys, models, pkg, type, output, audit, sourceSynthes
   const phraseCues = baselinePhraseCues(baseline, 70);
   const benchmarkMode = benchmarkModeInstruction(type, baseline);
   const baselineLines = baseline ? baseline.split("\n").length : 0;
-  const targetMinLines = Math.round(baselineLines * 0.55);
+  const targetMinLines = baseline
+    ? Math.round(baselineLines * 0.55)
+    : Math.round(targetLength / 32);
   const maxTokens = isIntakeBenchmark(baseline)
     ? Math.max(900, Math.min(1400, Math.ceil((targetLength * 0.9) / 4) + 220))
     : Math.max(1800, Math.min(4600, Math.ceil((targetLength * 1.18) / 4) + 500));
@@ -1577,7 +1631,9 @@ async function expandShortOutput(keys, models, pkg, type, output, audit, rawSnip
   const phraseCues = baselinePhraseCues(baseline, 70);
   const benchmarkMode = benchmarkModeInstruction(type, baseline);
   const baselineLines = baseline ? baseline.split("\n").length : 0;
-  const targetMinLines = Math.round(baselineLines * 0.55);
+  const targetMinLines = baseline
+    ? Math.round(baselineLines * 0.55)
+    : Math.round(targetLength / 32);
   const tooLong = output.length > targetLength * 1.35;
   const targetMinChars = tooLong
     ? Math.round(targetLength * 0.85)
@@ -1752,7 +1808,9 @@ async function generateGithubPhase1Synthesis(options) {
     sourceSyntheses,
   );
   const draftMetrics = deterministicMetrics(draftText, baseline.length);
-  const draftLocalIssues = localParityIssues(promptType, draftText, baseline);
+  const draftLocalIssues = baseline.length
+    ? localParityIssues(promptType, draftText, baseline)
+    : genericQualityIssues(promptType, draftText, targetLength);
   let finalText = draftText;
   let finalAudit = draftAudit;
 
@@ -1801,12 +1859,22 @@ async function generateGithubPhase1Synthesis(options) {
   }
 
   let finalMetrics = deterministicMetrics(finalText, baseline.length);
-  let finalLocalIssues = localParityIssues(promptType, finalText, baseline);
-  const needsExpand = finalLocalIssues.length > 0 ||
-    (baseline.length ? finalMetrics.length_ratio < 0.8 : finalText.length < targetLength);
-  if (needsExpand) {
+  let finalLocalIssues = baseline.length
+    ? localParityIssues(promptType, finalText, baseline)
+    : genericQualityIssues(promptType, finalText, targetLength);
+  let alignmentPasses = 0;
+  while (alignmentPasses < 2) {
+    const tooShort = baseline.length
+      ? finalMetrics.length_ratio < 0.8
+      : finalText.length < targetLength * 0.82;
+    const tooLong = baseline.length
+      ? finalMetrics.length_ratio > 1.35
+      : finalText.length > targetLength * 1.35;
+    if (!tooShort && !tooLong && finalLocalIssues.length === 0) break;
+
+    alignmentPasses += 1;
     log(
-      `Expanding/alignment pass for ${promptType}; current chars=${finalText.length}, target=${targetLength}, deterministic_issues=${finalLocalIssues.length}`,
+      `Expanding/alignment pass ${alignmentPasses} for ${promptType}; current chars=${finalText.length}, target=${targetLength}, deterministic_issues=${finalLocalIssues.length}`,
     );
     const preExpandText = finalText;
     const expandResult = await expandShortOutput(
@@ -1829,10 +1897,13 @@ async function generateGithubPhase1Synthesis(options) {
       baseline,
       targetLength,
     );
-    // One rule: if the model hit its output limit (finish=length), the result is truncated.
-    // Keep the patched version instead. If it finished naturally, accept the expansion.
     if (!expandResult.finishedNaturally) {
-      log(`Expand hit output limit (finish=length) — keeping pre-expand text (${preExpandText.length} chars)`);
+      log(`Expand hit output limit â€” keeping pre-expand text (${preExpandText.length} chars)`);
+      finalText = preExpandText;
+    } else if (expandResult.text.length < preExpandText.length * 0.85) {
+      log(
+        `Expand returned shorter output (${expandResult.text.length} chars vs ${preExpandText.length}); keeping pre-expand text`,
+      );
       finalText = preExpandText;
     } else {
       finalText = expandResult.text;
@@ -1848,7 +1919,9 @@ async function generateGithubPhase1Synthesis(options) {
       sourceSyntheses,
     );
     finalMetrics = deterministicMetrics(finalText, baseline.length);
-    finalLocalIssues = localParityIssues(promptType, finalText, baseline);
+    finalLocalIssues = baseline.length
+      ? localParityIssues(promptType, finalText, baseline)
+      : genericQualityIssues(promptType, finalText, targetLength);
   }
 
   const finalPath = path.join(cacheDir, `${safeSegment(topicName)}_${promptType}_github_phase1.md`);
