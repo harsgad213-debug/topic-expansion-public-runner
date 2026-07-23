@@ -1,5 +1,6 @@
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 const { fetch, ProxyAgent } = require("undici");
 
 const GITHUB_ENDPOINT = "https://models.github.ai/inference/chat/completions";
@@ -83,6 +84,12 @@ function transportErrorSummary(err) {
   return `name=${details.error_type} | code=${details.error_code} | message=${details.error_message}`;
 }
 
+function proxyLogValue(proxyStr) {
+  if (!proxyStr) return "none";
+  const id = crypto.createHash("sha256").update(proxyStr).digest("hex").slice(0, 10);
+  return `proxy:${id}`;
+}
+
 function emitPhase1AttemptTelemetry(event) {
   console.log(JSON.stringify({
     _type: "github_phase1_attempt",
@@ -91,6 +98,7 @@ function emitPhase1AttemptTelemetry(event) {
     provider: event.provider,
     model: event.model,
     route: event.route,
+    proxy: event.proxy || "none",
     attempt: event.attempt,
     attempts: event.attempts,
     max_tokens: event.max_tokens,
@@ -1410,9 +1418,10 @@ async function callGitHub(keys, models, messages, options = {}) {
       ? Math.max(500, Math.min(6000 - Math.ceil(inputChars / 4) - 100, maxTokens * 2))
       : maxTokens;
     const route = dispatcher ? "proxy" : "direct";
+    const proxyLabel = proxyLogValue(proxyStr);
     const timeoutMs = options.timeoutMs || 180000;
     recordProviderStat(selectedProvider, "requests");
-    console.log(`[REQ #${requestId}][${selectedProvider}] start | model=${selectedModel} | route=${route} | attempt=${attempt + 1}/${attempts} | max_tokens=${requestMaxTokens} | timeout_ms=${timeoutMs}`);
+    console.log(`[REQ #${requestId}][${selectedProvider}] start | model=${selectedModel} | route=${route} | proxy=${proxyLabel} | attempt=${attempt + 1}/${attempts} | max_tokens=${requestMaxTokens} | timeout_ms=${timeoutMs}`);
     const requestStartedAt = Date.now();
 
     try {
@@ -1449,12 +1458,13 @@ async function callGitHub(keys, models, messages, options = {}) {
         recordProviderStat(selectedProvider, "failures");
         if (res.status === 429) recordProviderStat(selectedProvider, "rate429s");
         const errorDetails = providerErrorDetails(data);
-        console.log(`[REQ #${requestId}][${selectedProvider}] provider_error | status=${res.status} | model=${selectedModel} | ${providerErrorSummary(data)}`);
+        console.log(`[REQ #${requestId}][${selectedProvider}] provider_error | status=${res.status} | model=${selectedModel} | route=${route} | proxy=${proxyLabel} | ${providerErrorSummary(data)}`);
         emitPhase1AttemptTelemetry({
           request_id: requestId,
           provider: selectedProvider,
           model: selectedModel,
           route,
+          proxy: proxyLabel,
           attempt: attempt + 1,
           attempts,
           max_tokens: requestMaxTokens,
@@ -1510,12 +1520,13 @@ async function callGitHub(keys, models, messages, options = {}) {
         if (content.startsWith('<think>') || content.trim() === '') {
           lastError = new Error('Model returned unclosed <think> block - output discarded.');
           recordProviderStat(selectedProvider, "failures");
-          console.log(`[REQ #${requestId}][${selectedProvider}] rejected | model=${selectedModel} | reason=unclosed_think_block | chars=${content.length}`);
+          console.log(`[REQ #${requestId}][${selectedProvider}] rejected | model=${selectedModel} | route=${route} | proxy=${proxyLabel} | reason=unclosed_think_block | chars=${content.length}`);
           emitPhase1AttemptTelemetry({
             request_id: requestId,
             provider: selectedProvider,
             model: selectedModel,
             route,
+            proxy: proxyLabel,
             attempt: attempt + 1,
             attempts,
             max_tokens: requestMaxTokens,
@@ -1539,12 +1550,13 @@ async function callGitHub(keys, models, messages, options = {}) {
       if (!content.trim()) {
         lastError = new Error("Models returned empty content.");
         recordProviderStat(selectedProvider, "failures");
-        console.log(`[REQ #${requestId}][${selectedProvider}] rejected | model=${selectedModel} | reason=empty_content | finish=${finishReason}`);
+        console.log(`[REQ #${requestId}][${selectedProvider}] rejected | model=${selectedModel} | route=${route} | proxy=${proxyLabel} | reason=empty_content | finish=${finishReason}`);
         emitPhase1AttemptTelemetry({
           request_id: requestId,
           provider: selectedProvider,
           model: selectedModel,
           route,
+          proxy: proxyLabel,
           attempt: attempt + 1,
           attempts,
           max_tokens: requestMaxTokens,
@@ -1565,12 +1577,13 @@ async function callGitHub(keys, models, messages, options = {}) {
         continue;
       }
       recordProviderStat(selectedProvider, "successes");
-      console.log(`[REQ #${requestId}][${selectedProvider}] success | status=${res.status} | model=${selectedModel} | finish=${finishReason} | in=${usage.prompt_tokens || '?'} | out=${usage.completion_tokens || '?'} | chars=${content.length}`);
+      console.log(`[REQ #${requestId}][${selectedProvider}] success | status=${res.status} | model=${selectedModel} | route=${route} | proxy=${proxyLabel} | finish=${finishReason} | in=${usage.prompt_tokens || '?'} | out=${usage.completion_tokens || '?'} | chars=${content.length}`);
       emitPhase1AttemptTelemetry({
         request_id: requestId,
         provider: selectedProvider,
         model: selectedModel,
         route,
+        proxy: proxyLabel,
         attempt: attempt + 1,
         attempts,
         max_tokens: requestMaxTokens,
@@ -1589,12 +1602,13 @@ async function callGitHub(keys, models, messages, options = {}) {
       lastError = err;
       recordProviderStat(selectedProvider, "failures");
       const errorDetails = transportErrorDetails(err);
-      console.log(`[REQ #${requestId}][${selectedProvider}] transport_error | model=${selectedModel} | ${transportErrorSummary(err)}`);
+      console.log(`[REQ #${requestId}][${selectedProvider}] transport_error | model=${selectedModel} | route=${route} | proxy=${proxyLabel} | ${transportErrorSummary(err)}`);
       emitPhase1AttemptTelemetry({
         request_id: requestId,
         provider: selectedProvider,
         model: selectedModel,
         route,
+        proxy: proxyLabel,
         attempt: attempt + 1,
         attempts,
         max_tokens: requestMaxTokens,
