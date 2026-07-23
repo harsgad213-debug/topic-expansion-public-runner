@@ -181,9 +181,7 @@ function providerFailureAction(provider, res, data, text) {
     const retryAfter = Number.parseFloat(res.headers.get("retry-after") || "");
     const cooldownMs = Number.isFinite(retryAfter) && retryAfter > 0
       ? Math.round(retryAfter * 1000)
-      : provider === "groq"
-        ? 30000
-        : 60000;
+      : 60000;
     return { action: "cooldown_bucket", reason: "minute_rate_limit", cooldownMs };
   }
 

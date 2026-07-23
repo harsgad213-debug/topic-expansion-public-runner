@@ -1931,23 +1931,43 @@ async function run() {
   console.log("Completed This Run: " + newlyCompletedCount);
   console.log("Pipeline Finished!");
   console.log("\n=== VALIDATION METRICS ===");
-  console.log("Total Requests: " + totalRequests);
-  console.log("Total 429s: " + total429s);
-  console.log("  -> TPD Limits (Daily Exhaustion): " + total429_TPD);
-  console.log("  -> TPM Limits: " + total429_TPM);
-  console.log("  -> RPM Limits: " + total429_RPM);
-  console.log("  -> Context/Size Limits: " + total429_Context);
-  console.log("  -> Unknown: " + total429_Unknown);
-  console.log(
-    "429 Rate: " +
-      ((total429s / Math.max(1, totalRequests)) * 100).toFixed(2) +
-      "%",
-  );
-  console.log(
-    "Average Wait Time: " +
-      Math.round(totalWaitTime / Math.max(1, waitCount)) +
-      "ms",
-  );
+  if (USE_GITHUB_PHASE1 && typeof getGithubPhase1Stats === "function") {
+    const phase1Stats = getGithubPhase1Stats();
+    const providerRows = Object.entries(phase1Stats.provider_stats || {});
+    const phase1Total429s = providerRows.reduce((sum, [, s]) => sum + (s.rate429s || 0), 0);
+    const phase1Cooldowns = providerRows.reduce((sum, [, s]) => sum + (s.cooldowns || 0), 0);
+    const phase1Daily = providerRows.reduce((sum, [, s]) => sum + (s.dailyExhausted || 0), 0);
+    const phase1KeyDead = providerRows.reduce((sum, [, s]) => sum + (s.keyExhausted || 0), 0);
+    console.log("Phase1 Requests: " + phase1Stats.total_requests);
+    console.log("Phase1 Failures/Rejected/Retried: " + phase1Stats.total_call_failures);
+    console.log("Phase1 429s: " + phase1Total429s);
+    console.log("  -> Cooldown Actions: " + phase1Cooldowns);
+    console.log("  -> Daily/TPD Exhausted Buckets: " + phase1Daily);
+    console.log("  -> Key Exhausted Actions: " + phase1KeyDead);
+    console.log(
+      "Phase1 429 Rate: " +
+        ((phase1Total429s / Math.max(1, phase1Stats.total_requests)) * 100).toFixed(2) +
+        "%",
+    );
+  } else {
+    console.log("Total Requests: " + totalRequests);
+    console.log("Total 429s: " + total429s);
+    console.log("  -> TPD Limits (Daily Exhaustion): " + total429_TPD);
+    console.log("  -> TPM Limits: " + total429_TPM);
+    console.log("  -> RPM Limits: " + total429_RPM);
+    console.log("  -> Context/Size Limits: " + total429_Context);
+    console.log("  -> Unknown: " + total429_Unknown);
+    console.log(
+      "429 Rate: " +
+        ((total429s / Math.max(1, totalRequests)) * 100).toFixed(2) +
+        "%",
+    );
+    console.log(
+      "Average Wait Time: " +
+        Math.round(totalWaitTime / Math.max(1, waitCount)) +
+        "ms",
+    );
+  }
 
   // Close browser if it was opened
   if (sharedBrowserContext) {
