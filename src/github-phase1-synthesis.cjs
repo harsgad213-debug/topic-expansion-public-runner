@@ -1570,8 +1570,36 @@ function sourceCueLines(text, limit = 12) {
   );
 }
 
-function buildCoveragePlan(pkg, type, sourceSyntheses, rawSnippets) {
+function sampledText(text, maxChars = 70000) {
+  const value = String(text || "");
+  if (value.length <= maxChars) return value;
+  const slice = Math.max(8000, Math.floor(maxChars / 3));
+  const middle = Math.max(slice, Math.floor(value.length / 2) - Math.floor(slice / 2));
+  return [
+    value.slice(0, slice),
+    value.slice(middle, middle + slice),
+    value.slice(Math.max(0, value.length - slice)),
+  ].join("\n");
+}
+
+function transcriptPhrasesForSource(source, limit = 48) {
+  if (!source?.text) return [];
+  return extractPhrases(
+    [
+      source.title,
+      source.filename,
+      sampledText(source.text),
+    ].join("\n"),
+    limit,
+  ).map((item) => item.phrase);
+}
+
+function buildCoveragePlan(pkg, type, sourceSyntheses, rawSnippets, rawSources = []) {
+  const sourcesById = new Map(rawSources.map((source) => [source.source_id, source]));
   const perSource = sourceSyntheses.map((source) => {
+    const rawSource = sourcesById.get(source.source_id);
+    const transcriptSample = rawSource ? sampledText(rawSource.text, 70000) : "";
+    const transcriptPhrases = transcriptPhrasesForSource(rawSource, 56);
     const rawForSource = rawSnippets
       .filter((snippet) => snippet.source_id === source.source_id)
       .flatMap((snippet) => [
@@ -1582,20 +1610,28 @@ function buildCoveragePlan(pkg, type, sourceSyntheses, rawSnippets) {
       source.title,
       source.filename,
       source.synthesis,
+      transcriptPhrases.join(" "),
       rawForSource.join(" "),
     ].join("\n");
     const requiredPhrases = uniqueLimited(
       [
+        ...transcriptPhrases,
         ...extractPhrases(phraseText, 48).map((item) => item.phrase),
         ...rawForSource,
       ],
-      type === "knowledge_map" ? 24 : 30,
+      type === "knowledge_map" ? 38 : 44,
     );
     return {
       source_id: source.source_id,
       title: source.title,
       filename: source.filename,
-      section_cues: sourceCueLines(source.synthesis, 12),
+      section_cues: uniqueLimited(
+        [
+          ...sourceCueLines(source.synthesis, 10),
+          ...sourceCueLines(transcriptSample, 8),
+        ],
+        14,
+      ),
       required_phrases: requiredPhrases,
     };
   });
@@ -1604,7 +1640,7 @@ function buildCoveragePlan(pkg, type, sourceSyntheses, rawSnippets) {
     prompt_type: type,
     global_phrases: uniqueLimited(
       perSource.flatMap((source) => source.required_phrases),
-      type === "knowledge_map" ? 45 : 55,
+      type === "knowledge_map" ? 70 : 80,
     ),
     sources: perSource,
   };
@@ -1783,9 +1819,9 @@ function buildFinalPrompt(pkg, type, sourceSyntheses, targetLength, rawSnippets,
   const learnedArchetypeText = baseline ? "" : renderLearnedArchetype(coveragePlan?.learned_archetype);
   const coveragePlanText = renderCoveragePlan(coveragePlan, {
     sourceLimit: manySources ? 5 : 8,
-    phraseLimit: manySources ? 12 : 18,
+    phraseLimit: manySources ? 14 : 24,
     sectionLimit: manySources ? 5 : 8,
-    globalLimit: manySources ? 24 : 40,
+    globalLimit: manySources ? 30 : 55,
     maxChars: manySources ? 4200 : 6800,
   });
   return [
@@ -2015,9 +2051,9 @@ async function patchOutput(keys, models, pkg, type, output, audit, sourceSynthes
   const learnedArchetypeText = baseline ? "" : renderLearnedArchetype(learnedArchetype);
   const coveragePlanText = renderCoveragePlan(coveragePlan, {
     sourceLimit: 7,
-    phraseLimit: 14,
+    phraseLimit: 22,
     sectionLimit: 6,
-    globalLimit: 32,
+    globalLimit: 50,
     maxChars: 5200,
   });
   const maxTokens = isIntakeBenchmark(baseline)
@@ -2121,9 +2157,9 @@ async function expandShortOutput(keys, models, pkg, type, output, audit, rawSnip
         : Math.max(1800, Math.min(4600, Math.ceil((targetLength * 1.2) / 4) + 550));
   const coveragePlanText = renderCoveragePlan(coveragePlan, {
     sourceLimit: 7,
-    phraseLimit: 14,
+    phraseLimit: 22,
     sectionLimit: 6,
-    globalLimit: 32,
+    globalLimit: 50,
     maxChars: 5200,
   });
   const learnedArchetypeText = baseline ? "" : renderLearnedArchetype(learnedArchetype);
@@ -2266,7 +2302,7 @@ async function generateGithubPhase1Synthesis(options) {
 
   const rawSnippets = selectRawEvidenceSnippets(sources, topicName, promptType);
   writeJson(path.join(cacheDir, `${promptType}_raw_evidence_snippets.json`), rawSnippets);
-  const coveragePlan = buildCoveragePlan(pkg, promptType, sourceSyntheses, rawSnippets);
+  const coveragePlan = buildCoveragePlan(pkg, promptType, sourceSyntheses, rawSnippets, sources);
   writeJson(path.join(cacheDir, `${promptType}_coverage_plan.json`), coveragePlan);
 
   const baselinePath = baselineFileFor(topicName, promptType, baselineDir);
