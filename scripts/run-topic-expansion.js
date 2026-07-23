@@ -80,13 +80,13 @@ function loadKeysFromEnv(name) {
     .map((key) => key.trim())
     .filter(Boolean);
   const filePath = process.env[`${name}_FILE`];
-  if (!filePath) return fromInline;
+  if (!filePath) return [...new Set(fromInline)];
   const fromFile = fs
     .readFileSync(filePath, "utf8")
     .split(/[\r\n,]+/)
     .map((key) => key.trim())
     .filter(Boolean);
-  return [...fromInline, ...fromFile];
+  return [...new Set([...fromInline, ...fromFile])];
 }
 
 function safeBucketId(key, model) {
